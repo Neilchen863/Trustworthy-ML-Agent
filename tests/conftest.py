@@ -39,7 +39,9 @@ DEFAULT_NODES = [
 def make_run(base: Path, name: str = "run_a", mode: str = "agent", nodes=None, final: str = "d",
              grade: float | None = 0.65, constant_submission: bool = False, variant: str | None = None,
              notes: str | None = None, agent_log: list[str] | None = None,
-             competition: str = "random-acts-of-pizza") -> Path:
+             competition: str = "random-acts-of-pizza", legacy_parent_field: bool = False) -> Path:
+    """Default journal layout = what real AIDE writes: node["parent"] empty, tree in node2parent.
+    legacy_parent_field=True sets node["parent"] directly instead."""
     nodes = nodes or DEFAULT_NODES
     run = base / name
     (run / "logs").mkdir(parents=True)
@@ -49,18 +51,21 @@ def make_run(base: Path, name: str = "run_a", mode: str = "agent", nodes=None, f
     (run / "run_config.txt").write_text(
         f"competition      = {competition}\nrun_id           = {name}\nselection_mode   = {mode}\n"
         f"prompt_variant   = {variant or 'none'}\n")
-    journal = []
+    journal, node2parent = [], {}
     for ch, step, parent, val, analysis in nodes:
         buggy = val is None
         journal.append({
             "code": "import pandas as pd\nprint('fit')", "plan": f"plan {ch}", "step": str(step), "id": nid(ch),
-            "parent": nid(parent) if parent else None, "children": [],
+            "parent": nid(parent) if (parent and legacy_parent_field) else None, "children": [],
             "_term_out": ["Traceback (most recent call last):\nKeyError: 'x'\n"] if buggy
             else [f"Validation AUC: {val}\n"],
             "exec_time": 12.5, "exc_type": "KeyError" if buggy else None, "analysis": analysis,
             "metric": {"value": None, "maximize": None} if buggy else {"value": val, "maximize": True},
             "is_buggy": buggy})
-    (run / "logs" / "journal.json").write_text(json.dumps({"nodes": journal, "node2parent": {}, "__version": "2"}))
+        if parent:
+            node2parent[nid(ch)] = nid(parent)
+    (run / "logs" / "journal.json").write_text(
+        json.dumps({"nodes": journal, "node2parent": node2parent, "__version": "2"}))
     (run / "code" / "node_id.txt").write_text(nid(final))
     rng = random.Random(0)
     rows = ["request_id,requester_received_pizza"]

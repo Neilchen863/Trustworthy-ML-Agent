@@ -22,12 +22,33 @@ _VENDOR = Path(__file__).resolve().parents[2] / "vendor" / "issue_scanner" / "au
 _module = None
 
 
+def _restore_parents(load_run):
+    """Input normalisation, not a logic change.  Real AIDE journals keep parent links only in
+    the top-level `node2parent` map (every node's own `parent` is empty), but the scanner walks
+    `node["parent"]`.  Without this it reports e.g. "descendants: 0 (0% of budget on the
+    contaminated lineage)" for a run where 97% of nodes descend from phantom nodes, and that
+    wrong evidence would be handed to the meta-improver.  Detector ids/severities are unchanged."""
+    def wrapped(run_dir, strict_journal=False):
+        ctx = load_run(run_dir, strict_journal)
+        journal = Path(run_dir) / "logs" / "journal.json"
+        try:
+            node2parent = json.loads(journal.read_text()).get("node2parent", {}) if journal.is_file() else {}
+        except (json.JSONDecodeError, AttributeError):
+            node2parent = {}
+        for node in ctx["nodes"]:
+            if not node.get("parent") and node.get("id") in node2parent:
+                node["parent"] = node2parent[node["id"]]
+        return ctx
+    return wrapped
+
+
 def load_scanner():
     global _module
     if _module is None:
         spec = importlib.util.spec_from_file_location("rsi_vendor_audit_run", _VENDOR)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        mod.load_run = _restore_parents(mod.load_run)
         _module = mod
     return _module
 

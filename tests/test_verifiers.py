@@ -90,3 +90,13 @@ def test_run_without_journal_is_not_applicable(runs, task):
     run = make_run(runs)
     (run / "logs/journal.json").write_text('{"nodes": []}')
     assert {r["status"] for r in bank(run, task)["results"]} == {"not_applicable"}
+
+
+def test_scanner_sees_lineage_from_node2parent_so_evidence_is_not_wrong(runs, task):
+    """Regression: as-is the vendored scanner reported 'descendants: 0 (0%)' on real-format journals."""
+    nodes = [("a", 1, None, 1.0, "phantom root"), ("b", 2, "a", 0.7, "child"), ("c", 3, "b", 0.71, "grandchild"),
+             ("d", 4, None, 0.6, "unrelated")]
+    r = by_name(bank(make_run(runs, nodes=nodes, final="c", grade=0.55), task))["validation_argmax_anchoring"]
+    text = " ".join(r["evidence"])
+    assert "S1_submitted_phantom" in text, "honest child of a phantom must be flagged via its lineage"
+    assert "后代共 2 个" in text and "后代共 0 个" not in text

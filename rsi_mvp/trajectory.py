@@ -43,8 +43,13 @@ def read_journal(run_dir: Path) -> list[dict]:
         except json.JSONDecodeError:
             continue
         nodes = data["nodes"] if isinstance(data, dict) else data
+        node2parent = data.get("node2parent", {}) if isinstance(data, dict) else {}
         for n in nodes:
             n["step"] = int(n.get("step") or 0)
+            # Real AIDE journals leave every node's own `parent` empty; the tree is only in
+            # the top-level node2parent map.  Older/legacy journals set `parent` directly.
+            if not n.get("parent") and n.get("id") in node2parent:
+                n["parent"] = node2parent[n["id"]]
         return sorted(nodes, key=lambda n: n["step"])
     return []
 

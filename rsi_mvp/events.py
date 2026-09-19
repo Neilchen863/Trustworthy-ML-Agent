@@ -42,7 +42,8 @@ def parse_agent_log(run_dir: Path) -> list[dict]:
                             "fallback": None, "submit_node": None, "submit_reason": None})
             continue
         if _SEARCH_NOTHING.search(line):
-            buckets.append({"action": "draft", "node": "", "reason": None,
+            buckets.append({"action": "draft", "node": "",
+                            "reason": "automatic: no working or debuggable node exists yet, so draft",
                             "fallback": None, "submit_node": None, "submit_reason": None})
             continue
         m = _SEARCH_FALLBACK.search(line)

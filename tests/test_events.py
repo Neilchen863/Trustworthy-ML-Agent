@@ -13,6 +13,7 @@ def test_agent_mode_uses_logged_rationale_and_selection_events(runs):
     assert all(validate_event(e) for e in ev)
     props = [e for e in ev if e["decision_type"] == "EXPERIMENT_PROPOSAL"]
     assert [p["action"] for p in props] == ["draft", "draft", "improve:aaaaaaaa", "improve:cccccccc"]
+    assert props[0]["rationale"].startswith("automatic:") and props[0]["rationale_source"] == "logged"
     assert props[2]["rationale"] == "a is the best so far" and props[2]["rationale_source"] == "logged"
     sel = [e for e in ev if e["decision_type"] == "CANDIDATE_SELECTION"]
     assert [s["action"] for s in sel] == ["select:cccccccc", "select:dddddddd"]
@@ -60,3 +61,20 @@ def test_parse_agent_log_marks_fallback(runs):
            "WARNING: [agent search] failed (agent search produced an unusable choice: debug abcd) -> falling back to rule-based policy"]
     run = make_run(runs, mode="agent", agent_log=log)
     assert parse_agent_log(run)[0]["fallback"].startswith("agent search produced")
+
+
+def test_parent_links_come_from_node2parent_like_real_journals(runs):
+    """Real journals leave node["parent"] empty; the tree lives only in node2parent.  A fixture that
+    set node["parent"] directly hid a bug that made every real node look like a draft."""
+    import json
+    run = make_run(runs, mode="rule")
+    j = json.loads((run / "logs/journal.json").read_text())
+    assert all(n["parent"] is None for n in j["nodes"]) and j["node2parent"]
+    props = [e for e in extract_events(run, "rule") if e["decision_type"] == "EXPERIMENT_PROPOSAL"]
+    assert [p["action"] for p in props] == ["draft", "draft", "improve:aaaaaaaa", "improve:cccccccc"]
+
+
+def test_legacy_per_node_parent_field_still_works(runs):
+    run = make_run(runs, mode="rule", legacy_parent_field=True)
+    props = [e for e in extract_events(run, "rule") if e["decision_type"] == "EXPERIMENT_PROPOSAL"]
+    assert props[2]["action"] == "improve:aaaaaaaa"
