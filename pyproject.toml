@@ -1,0 +1,19 @@
+[project]
+name = "real-rsi-mvp"
+version = "0.3.0"
+description = "Minimal RSI loop around existing AIDE rule/agent modes on MLE-bench tasks (spec v0.3)"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+verifiers = ["pandas"]   # the vendored issue scanner's submission checks (B1-B6) need pandas
+
+[project.scripts]
+rsi = "rsi_mvp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rsi_mvp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
