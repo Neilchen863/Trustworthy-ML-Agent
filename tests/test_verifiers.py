@@ -100,3 +100,17 @@ def test_scanner_sees_lineage_from_node2parent_so_evidence_is_not_wrong(runs, ta
     text = " ".join(r["evidence"])
     assert "S1_submitted_phantom" in text, "honest child of a phantom must be flagged via its lineage"
     assert "后代共 2 个" in text and "后代共 0 个" not in text
+
+
+def test_missing_pandas_makes_submission_sanity_not_applicable_never_a_clean_zero(runs, task, monkeypatch):
+    """CRC's host python has no pandas: the scanner emits an info B_skip. That must not read as 'clean'."""
+    import builtins
+    real_import = builtins.__import__
+    def no_pandas(name, *a, **k):
+        if name == "pandas":
+            raise ImportError("no pandas")
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", no_pandas)
+    b = by_name(bank(make_run(runs, constant_submission=True), task))
+    assert b["submission_sanity"]["status"] == "not_applicable" and "pandas" in b["submission_sanity"]["explanation"]
+    assert "submission_sanity" not in bank(make_run(runs, name="run_b", constant_submission=True), task)["reward_vector"]

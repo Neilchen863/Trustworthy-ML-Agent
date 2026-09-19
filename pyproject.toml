@@ -2,7 +2,7 @@
 name = "real-rsi-mvp"
 version = "0.3.0"
 description = "Minimal RSI loop around existing AIDE rule/agent modes on MLE-bench tasks (spec v0.3)"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = ["pyyaml>=6"]
 
 [project.optional-dependencies]

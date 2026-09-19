@@ -141,6 +141,11 @@ def verify(verifier: str, scan: IssueScannerRun, reward_map: dict[str, float],
     if scan.n_nodes == 0:
         return make_verifier_result(verifier, [], 0.0, [], "run has no journal nodes", status="not_applicable")
     route = ROUTES[verifier]
+    # The scanner skips its whole submission layer when pandas is missing and says so only with an
+    # info-level B_skip.  That is "could not check", not "checked and clean": never award reward 0.
+    if verifier == "submission_sanity" and any(f["detector"] == "B_skip" for f in scan.findings):
+        return make_verifier_result(verifier, [], 0.0, [], "scanner skipped submission checks: pandas is not "
+                                    "installed in this interpreter", status="not_applicable")
     mine = [f for f in scan.findings if _routed_to(f) == verifier
             and _SEV_ORDER[f["severity"]] >= _SEV_ORDER[floor]]
     if not mine:
