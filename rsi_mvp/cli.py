@@ -111,6 +111,18 @@ def cmd_heldout_report(args) -> None:
     print(json.dumps(_project(args).heldout_report(args.harness_task, args.mode), indent=2))
 
 
+def cmd_drive(args) -> None:
+    """Unattended training rounds (no freeze, no held-out).  Resumable; halts on anything unexpected."""
+    from .driver import Driver
+    p = _project(args)
+    driver = Driver(p, SgeBackend(args.aide_root), _llm(args), args.task, args.modes, args.last_round,
+                    Path(args.aide_root) if args.aide_root else None, args.poll_secs,
+                    log=lambda m: print(m, flush=True))
+    outcome = driver.run()
+    print(f"driver finished: {outcome}", flush=True)
+    sys.exit(0 if outcome == "done" else 3)
+
+
 def cmd_replay_demo(args) -> None:
     """Offline H0 -> H1 -> H2 over archived runs with the mock meta-improver.
 
@@ -181,6 +193,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("heldout-report", cmd_heldout_report, help="H0 vs H_final on held-out tasks")
     sp.add_argument("--harness-task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])
+
+    sp = add("drive", cmd_drive, help="unattended submit/collect/improve rounds (no freeze, no held-out)")
+    sp.add_argument("--task", required=True)
+    sp.add_argument("--modes", nargs="+", default=["rule", "agent"], choices=["rule", "agent"])
+    sp.add_argument("--last-round", type=int, default=2, help="final round index; improves happen before it")
+    sp.add_argument("--poll-secs", type=int, default=300)
+    sp.add_argument("--llm", choices=["mock", "openai"], default="openai")
+    sp.add_argument("--meta-model", default="gpt-4o-2024-08-06")
 
     sp = add("replay-demo", cmd_replay_demo, help="offline H0->H1->H2 over archived runs (mock LLM)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])
