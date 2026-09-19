@@ -1,0 +1,13 @@
+{
+  "decision_policy_text": "When evaluating candidates, ensure preprocessing steps are applied only within the training fold to prevent data leakage. Avoid using fields that are not available at prediction time. Be cautious of validation scores that seem too high, as they may indicate issues such as data leakage or improper validation setup.\nEnsure that all preprocessing steps, such as scaling or transforming data, are applied only after splitting the data into training and validation sets to prevent data leakage. Avoid using any fields that are not available at prediction time, such as those that are generated or updated after the event being predicted. Regularly review the validation setup to ensure it reflects realistic scenarios and does not inadvertently include future information.",
+  "memory_policy": {
+    "max_chars": 1500,
+    "max_records": 5
+  },
+  "mode": "agent",
+  "parent": "H1",
+  "prompt_notes": "",
+  "rule_config": null,
+  "task": "random_acts_of_pizza",
+  "version": "H2"
+}
