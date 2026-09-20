@@ -1,6 +1,6 @@
 # real-rsi-mvp
 
-> **Status 2026-09-20:** agent-mode results so far are invalid (the decision LLM never ran; see `docs/results_roap_h0_h1_h2.md`).
+> **Status 2026-09-20:** the pilot/v2 agent-mode results are invalid (the decision LLM never ran). Agent mode was fixed in a dedicated overlay and ran once for real in v3 (`docs/v3_single_agent_run_20260920.md`, ≈$1.30, one run, no effect claimed).
 > The rule arm and the pipeline itself are sound. No job is running on CRC.
 
 

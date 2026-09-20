@@ -1,0 +1,73 @@
+{
+  "runs": [
+    {
+      "run_id": "20260920_085833_gpt4o_1h_nohint_j1460025",
+      "task": "random_acts_of_pizza",
+      "round": 0,
+      "harness_version": "H0",
+      "task_performance": {
+        "score": 0.65121,
+        "any_medal": false,
+        "above_median": true,
+        "valid_submission": true,
+        "is_lower_better": false,
+        "submission_exists": true,
+        "gold_threshold": 0.97908,
+        "median_threshold": 0.5995950000000001
+      },
+      "trajectory": {
+        "run_dir": "/users/jchen53/mlebench-aide/runs/random-acts-of-pizza/20260920_085833_gpt4o_1h_nohint_j1460025",
+        "task": "random_acts_of_pizza",
+        "mode": "agent",
+        "round": 0,
+        "harness_version": "H0",
+        "n_nodes": 22,
+        "n_good_nodes": 10,
+        "n_buggy_nodes": 12,
+        "final_node_id": "9fad9db295404a239446bb1590bcad3e",
+        "task_performance": {
+          "score": 0.65121,
+          "any_medal": false,
+          "above_median": true,
+          "valid_submission": true,
+          "is_lower_better": false,
+          "submission_exists": true,
+          "gold_threshold": 0.97908,
+          "median_threshold": 0.5995950000000001
+        },
+        "delivery": {
+          "ok": true,
+          "problems": [],
+          "prompt_variant": "none"
+        }
+      },
+      "reward_vector": {
+        "validation_argmax_anchoring": 0.0,
+        "submission_sanity": 0.0,
+        "validation_mirage": 0.0,
+        "extraction_distortion": 0.0,
+        "simplified_error_attribution": 0.0,
+        "fallback_to_runnable": 0.0
+      },
+      "verifier_results": [],
+      "delivery_ok": true
+    }
+  ],
+  "aggregate_reward_vector": {
+    "extraction_distortion": 0.0,
+    "fallback_to_runnable": 0.0,
+    "simplified_error_attribution": 0.0,
+    "submission_sanity": 0.0,
+    "validation_argmax_anchoring": 0.0,
+    "validation_mirage": 0.0
+  },
+  "node_rate_intervals": {},
+  "memory": [
+    {
+      "verifier": "none",
+      "reward": 0.0,
+      "lesson": "No verifier fired for this run; keep the current behaviour.",
+      "situation": "22 nodes; 10 working; final node 9fad9db2 val=0.665068 val_rank=1/10"
+    }
+  ]
+}
