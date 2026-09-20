@@ -1,0 +1,31 @@
+diff --git a/scripts/_metric_parser_runtime.py b/scripts/_metric_parser_runtime.py
+index 4590759..b429c2b 100644
+--- a/scripts/_metric_parser_runtime.py
++++ b/scripts/_metric_parser_runtime.py
+@@ -63,13 +63,24 @@ def _last_number(line: str, skip: set[str] | None = None) -> float | None:
+     return values[-1] if values else None
+ 
+ 
++# A count of folds/splits ("5-fold", "5 folds", "cv=5", "n_splits=5") is not the metric.  Without this,
++# "Mean AUC over 5-fold CV: 0.6323" was read as 5.0 (the first number after the last metric name).
++_FOLD_COUNT = re.compile(
++    r"(?i)\d+\s*[- ]?\s*(?:folds?|splits?)\b|\b(?:n_splits|folds?|splits?|cv|k)\s*=\s*\d+"
++)
++
++
+ def _number_after_metric(line: str) -> float | None:
+     matches = list(_METRIC_NAME.finditer(line))
+     if not matches:
+         return None
+     tail = line[matches[-1].end() :]
+-    match = _NUM_RE.search(tail)
+-    return _float(match.group(1)) if match else None
++    fold_counts = [m.span() for m in _FOLD_COUNT.finditer(tail)]
++    for match in _NUM_RE.finditer(tail):
++        if any(start <= match.start(1) < end for start, end in fold_counts):
++            continue
++        return _float(match.group(1))
++    return None
+ 
+ 
+ def parse_metric_evidence(raw: str) -> dict[str, Any]:

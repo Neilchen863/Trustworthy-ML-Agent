@@ -95,3 +95,19 @@ def test_meta_improver_sees_the_interval_and_is_told_not_to_take_a_midpoint():
     assert data["runs"][0]["verifier_results"][0]["rate_upper"] == 0.15
     prompt = meta_improver.system_prompt("agent")
     assert "LOWER bound" in prompt and "rate_upper" in prompt and "midpoint" in prompt
+
+
+def test_the_run_index_records_the_overlay_and_seed_the_backend_actually_used(pinned_tasks_dir, state, tmp_path):
+    """Regression: the index was written from plan.env, so it silently omitted OVERLAY_PATH and AIDE_SEED_CODE."""
+    from rsi_mvp.loop import RsiProject
+    root, overlay = fake_root(tmp_path), tmp_path / "v2.overlay"
+    overlay.write_bytes(b"x")
+    p = RsiProject(pinned_tasks_dir, state)
+    p.init_harness("random_acts_of_pizza", "rule")
+    plan_ = p.plan_run("random_acts_of_pizza", "rule", 0, 2)
+    p.submit(plan_, SgeBackend(root, overlay))
+    row = p.index()[0]
+    assert row["env"]["OVERLAY_PATH"] == str(overlay.resolve())
+    assert row["env"]["AIDE_SEED_CODE"].endswith(f"rsi_{plan_.seed_sha256[:10]}.code.py")
+    assert row["replicate"] == 2 and row["seed_sha256"] == plan_.seed_sha256
+    assert not any("KEY" in k for k in row["env"])

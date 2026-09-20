@@ -125,8 +125,10 @@ class RsiProject:
         if not result.get("dry_run"):
             self.rounds_root.mkdir(parents=True, exist_ok=True)
             with self.index_path.open("a") as f:
+                # record the environment the backend ACTUALLY used (it adds the staged seed and the dedicated
+                # overlay); plan.env alone would leave those two out of the provenance record
                 f.write(json.dumps({"time": _now(), **{k: v for k, v in result.items() if k != "env"},
-                                    "env": {k: v for k, v in plan.env.items()}}) + "\n")
+                                    "env": dict(result.get("env", plan.env))}) + "\n")
         return result
 
     def index(self) -> list[dict]:
