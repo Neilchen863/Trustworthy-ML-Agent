@@ -23,8 +23,9 @@ No patch touched rule config, memory policy, or anything about *how to pick the 
 * The pipeline works end to end and unattended: submit -> wait -> collect -> verify -> memory ->
   meta-improver -> versioned patch -> next round, with delivery checked in every run
   (`prompt_variant` + notes present in the agent-read task description).
-* `validation_mirage` stayed at -1 in **all six** runs (same detector, `M2_fit_before_split`):
-  in this task, adding text advice did not change the detected behaviour.
+* `validation_mirage` was -1 in all six runs - **but see "Deep-dive corrections" below: that reward is
+  saturated (one flagged node out of ~400 is enough), so it says nothing about whether the patches
+  changed the behaviour.**
 
 ## What it does NOT show (confounds - do not read the score column as a patch effect)
 * n = 1 per cell. Official AUC ranges 0.575-0.628 with no monotone pattern.
@@ -38,7 +39,40 @@ No patch touched rule config, memory policy, or anything about *how to pick the 
 * Official grades of these training runs were shown to the meta-improver (train task, logged in
   `rounds/exposure_ledger.jsonl`); nothing here is held-out evidence.
 
-## Anomaly worth a separate look
-Agent H0 and H2 submitted nodes whose recorded validation metric is 5.0 - impossible for AUC - yet
-`extraction_distortion` scored 0 for both. Either a scanner blind spot (value printed by the program
-itself) or a mis-parsed metric. Not investigated.
+## Deep-dive corrections (2026-09-20, supersede the claims above where they conflict)
+
+**1. The `val = 5.0` nodes are a metric-guard bug, not an agent or scanner failure.**
+`scripts/_metric_parser_runtime.py` (research repo, the deterministic metric guard) takes, for a "CV
+summary" line, the *first number after the last metric name*. On `Mean AUC score (5-fold CV): 0.6222...`
+that is the `5` of "5-fold". Reproduced with the real parser: `Mean AUC over 5-fold CV: 0.6323` -> 5.0.
+The node's own log line says so: `[metric-guard] source=cv_summary value=5.0 cv_n=0
+corrected_reviewer_value=0.6323` - the reviewer LLM had the right number and the guard overrode it.
+
+| run | guard overrode | recorded vs true differ by >0.05 | submitted: recorded -> true | official |
+|---|---|---|---|---|
+| rule H0/H1/H2 | 1 / 0 / 0 | 0 / 0 / 0 | true = recorded | .622 / .575 / .628 |
+| agent H0 | 18 | 11 | 5.0 -> 0.6249 | 0.6272 |
+| agent H1 | 0 | 0 | 0.7018 -> 0.7018 | 0.6205 |
+| agent H2 | 26 | 16 | 5.0 -> 0.6323 | 0.6241 |
+
+Consequences: (a) agent `validation_argmax_anchoring = -1` in H0/H2 is mostly this artifact (the "phantom"
+nodes are the 5.0 nodes), and agent H1's `0` is only "the guard did not fire", not a patch effect;
+(b) the submitted agent nodes were honest (true val ~= official) - the bug hijacked the argmax, it did not
+cause an overfit submission; (c) whether the higher true-val nodes (H0 0.8062, H2 1.0000 "training AUC",
+which the scanner did not flag) were better or worse officially is unknown; (d) the scanner's
+`extraction_distortion` missed 5.0 - hypothesis, not verified: the digit `5` also appears in "5-fold", so
+"recorded value present in stdout" passes. Any historical run using this guard may carry the same artifact.
+
+**2. `validation_mirage = -1` is saturated; the earlier "patches did not change the behaviour" claim is
+withdrawn.** Nodes hit by `M2_fit_before_split` / any M detector, of working nodes:
+rule H0 1 (0.2%) / 3 (0.7%), H1 1 / 1, H2 0 / 1; agent H0 1 / 5 (2.0%), H1 1 / 3 (6.7%, n=45), H2 1 / 2.
+The behaviour was already ~0.3% at H0, so there was almost nothing to fix, and a binary "worst severity"
+reward cannot show a change between 0.2% and 0.3%. The meta-improver optimised a saturated signal. A
+per-node rate, not a worst-severity flag, is the reward this pilot needed.
+
+**3. Delivery is confirmed at prompt level:** the patch phrase occurs in `aide.verbose.log` twice per node
+(1000 hits for 500 nodes), i.e. in every LLM call, not just in the staged notes file.
+
+**4. My routing hid a coverage gap, mildly.** `E0_coverage_gap` (6-10 nodes/run whose `term_out` is
+`<OMITTED>`, journal-level extraction audit blind, partly covered by the verbose-log check E1v) is routed
+to no verifier, so "could not check" reads as `extraction_distortion = 0`.
