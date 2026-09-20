@@ -23,9 +23,9 @@ No patch touched rule config, memory policy, or anything about *how to pick the 
 * The pipeline works end to end and unattended: submit -> wait -> collect -> verify -> memory ->
   meta-improver -> versioned patch -> next round, with delivery checked in every run
   (`prompt_variant` + notes present in the agent-read task description).
-* `validation_mirage` was -1 in all six runs - **but see "Deep-dive corrections" below: that reward is
-  saturated (one flagged node out of ~400 is enough), so it says nothing about whether the patches
-  changed the behaviour.**
+* `validation_mirage` was -1 in all six runs. **Its magnitude, however, was never measured**: the first
+  version of this note called the reward "saturated" (0.2-0.4% of nodes) and that was wrong - see
+  "Deep-dive corrections", item 2 (agent mode: at least 10% of nodes; rule mode: 5.0% -> 2.8% -> 0.4%).
 
 ## What it does NOT show (confounds - do not read the score column as a patch effect)
 * n = 1 per cell. Official AUC ranges 0.575-0.628 with no monotone pattern.
@@ -63,12 +63,29 @@ which the scanner did not flag) were better or worse officially is unknown; (d) 
 `extraction_distortion` missed 5.0 - hypothesis, not verified: the digit `5` also appears in "5-fold", so
 "recorded value present in stdout" passes. Any historical run using this guard may carry the same artifact.
 
-**2. `validation_mirage = -1` is saturated; the earlier "patches did not change the behaviour" claim is
-withdrawn.** Nodes hit by `M2_fit_before_split` / any M detector, of working nodes:
-rule H0 1 (0.2%) / 3 (0.7%), H1 1 / 1, H2 0 / 1; agent H0 1 / 5 (2.0%), H1 1 / 3 (6.7%, n=45), H2 1 / 2.
-The behaviour was already ~0.3% at H0, so there was almost nothing to fix, and a binary "worst severity"
-reward cannot show a change between 0.2% and 0.3%. The meta-improver optimised a saturated signal. A
-per-node rate, not a worst-severity flag, is the reward this pilot needed.
+**2. `validation_mirage = -1` - CORRECTED. The first version of this item was wrong.**
+It claimed the reward was saturated because only 0.2-0.4% of nodes were flagged. Those figures counted the
+scanner's *exemplar findings*: `audit_run.py` keeps ONE finding per (detector, pattern) per run and writes the
+real hit count into its message as `[共 N 个节点命中此模式]` (no suffix = 1). Counting findings therefore counts
+patterns, not nodes. With the real hit counts (denominator = nodes with code; *lower* bound = the largest single
+pattern, *upper* bound = the patterns summed and capped at 100%, because overlap between patterns is not
+recoverable from the scanner's output):
+
+| run | nodes | flagged, lower | flagged, upper |
+| --- | --- | --- | --- |
+| rule H0 | 500 | 5.0% | 6.2% |
+| rule H1 | 500 | 2.8% | 2.8% |
+| rule H2 | 500 | 0.4% | 0.8% |
+| agent H0 | 466 | 11.8% | 24.2% |
+| agent H1 | 66 | 9.1% | 13.6% |
+| agent H2 | 500 | 10.0% | 26.6% |
+
+So the behaviour was common in agent mode (at least 1 node in 10 under every harness) and the binary -1 was
+mostly an accurate report, not noise. In rule mode the lower bound fell 5.0% -> 2.8% -> 0.4% across H0 -> H1 -> H2
+while agent mode stayed near 10-12%. That is suggestive of a rule-mode effect, but it is one run per cell, so it
+neither shows nor rules out an effect; the earlier "the patches did not change the behaviour" is withdrawn in
+both directions. What survives: a worst-severity flag cannot tell 5% from 0.4%, so a per-node rate is still the
+reward this design needed. What does not survive: "there was almost nothing to fix".
 
 **3. Delivery is confirmed at prompt level:** the patch phrase occurs in `aide.verbose.log` twice per node
 (1000 hits for 500 nodes), i.e. in every LLM call, not just in the staged notes file.
@@ -76,3 +93,24 @@ per-node rate, not a worst-severity flag, is the reward this pilot needed.
 **4. My routing hid a coverage gap, mildly.** `E0_coverage_gap` (6-10 nodes/run whose `term_out` is
 `<OMITTED>`, journal-level extraction audit blind, partly covered by the verbose-log check E1v) is routed
 to no verifier, so "could not check" reads as `extraction_distortion = 0`.
+
+## Follow-up (2026-09-20): what changed in the code (no new runs were submitted)
+
+1. **Node-level rate reward.** `validation_mirage` is configured `unit: node`: reward = -(nodes flagged / nodes
+   with code), taken from the scanner's real hit counts, with a lower bound (`rate`) and an upper bound
+   (`rate_upper`). An aggregate finding that names no node keeps its severity and is never diluted. Other
+   verifiers stay run-level because the scanner truncates their id lists. `actionable_rate: 0.01` decides what
+   reaches memory and the meta-improver; the old severity reward is kept as `severity_reward`.
+2. **Memory and patches separated.** `memory_policy.render` defaults to `none` for new harnesses: memory feeds the
+   meta-improver only, so the agent sees advice only through a patch. Harnesses saved without the key (H0-H2 of the
+   pilot) keep rendering lessons. `render` cannot be changed by a patch.
+3. **Replicates and a pinned first draft.** `task.yaml` sets `replicates: [1,2,3]` and a neutral, leak-free seed
+   (`tasks/random_acts_of_pizza/seeds/first_draft.py`, 5-fold AUC 0.6364 on the real data locally). The runner stages
+   it content-addressed and immutable, and delivery is checked (first node's code, `seed_code` in `run_config`).
+   The driver submits all replicates of a (mode, round) together and calls the meta-improver once over all of them.
+   `rsi summarize` prints mean / sd / min / max and the mirage rate per round.
+4. **Metric-guard fix written, not applied** - `patches/`. The guard that runs in a job is the copy inside the
+   overlay, so the fix only takes effect after `08_patch_feedback_interface.sh` is re-run.
+
+Starting the next experiment needs a fresh state root, because `rsi init` refuses to overwrite H0:
+`rsi --state-root experiments/v2 init --task random_acts_of_pizza`.

@@ -51,7 +51,7 @@ with `role: test`.
 
 ```bash
 pip install pyyaml pandas pytest          # pandas: the scanner's submission checks
-python -m pytest -q                       # 83 tests, no CRC / LLM / research repo needed
+python -m pytest -q                       # 127 tests, no CRC / LLM / research repo needed
 
 # offline plumbing check over archived runs (mock meta-improver; NOT an experiment)
 python -m rsi_mvp replay-demo --task random_acts_of_pizza --mode rule --runs RUN_A RUN_B RUN_C
@@ -83,6 +83,18 @@ nohup python -m rsi_mvp drive --task random_acts_of_pizza --modes rule agent --l
 
 CRC notes: host python is 3.9 without pandas (use a venv with pyyaml+pandas); `sge/submit.sh` re-reads the
 key from `config/env.sh` on the compute node, so that file must hold a valid key.
+
+## Experiment design switches (2026-09-20)
+
+* **Per-node rate reward** (`verifier_config.yaml: units`, `actionable_rate`): `validation_mirage` is the fraction
+  of nodes flagged (lower bound `rate`, upper bound `rate_upper`), not "worst severity". Run-level verifiers are
+  unchanged. Read `docs/results_roap_h0_h1_h2.md` for why (the first pilot mis-measured this).
+* **Memory vs patch**: `rsi init --memory-render none` (default) keeps memory out of the agent's prompt so a patch's
+  effect is not confounded with an auto-injected copy of the same advice; `lessons` reproduces the first pilot.
+* **Replicates + pinned first draft**: `task.yaml` `replicates` and `pinned_first_draft`; `rsi drive` runs every
+  replicate of a (mode, round) together, improves once, and `rsi summarize` reports mean/sd over replicates.
+* Start a new experiment in a new state root: `rsi --state-root experiments/v2 init --task random_acts_of_pizza`.
+* `patches/` holds the (unapplied) metric-guard fix and how to get it into the overlay.
 
 ## How H_t reaches AIDE (no edits to the research repo)
 
