@@ -12,7 +12,7 @@ because it spends real compute and money without a human watching:
 
   * a job left the queue without an official grade
   * the harness was not delivered to the run (PROMPT_VARIANT / notes mismatch)
-  * the meta-improver returned anything other than a valid, applied patch
+  * the improver produced anything other than a harness that passed the scope/runnability check
   * the harness version on disk is not the version this round expects
 """
 from __future__ import annotations
@@ -139,8 +139,8 @@ class Driver:
             if res["status"] != "proposed" or not res.get("new_version"):
                 raise DriverHalt(f"{mode} r{r}: meta-improver status={res['status']!r} reason={res.get('reason')!r}; "
                                  "a human should look before spending another round")
-            self.log(f"[{_now()}] {mode} r{r}: {res['provider']} proposed {res['new_version']}: "
-                     f"{res['patch']['target_component']} {json.dumps(res['patch']['proposed_patch'])[:200]}")
+            self.log(f"[{_now()}] {mode} r{r}: {res['improver']}[{res['provider']}] produced {res['new_version']}: "
+                     f"changed {res['changed_files']} - {(res.get('summary') or '')[:200]}")
             return "progress"
         return "waiting"
 

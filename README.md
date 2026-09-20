@@ -10,12 +10,38 @@ MLE-bench tasks (implements *Real RSI engineering spec v0.3*, `docs/`).
 ```
 task package -> existing AIDE runner (rule | agent) + mutable harness H_t
              -> trajectory + decision events -> verifier bank (reward vector)
-             -> memory update -> meta-improver -> bounded patch -> H_{t+1}
+             -> memory update -> improver agent edits the harness FILES in a workspace copy
+             -> scope + runnability check -> H_{t+1}   (git diff = post-hoc record)
 ```
 
-The mutable object is only the **harness**: prompt notes, a mode-specific decision
-policy (agent mode: instruction text; rule mode: a whitelisted, bounded config), and a
-memory policy. AIDE, the task environment and the evaluator are never touched.
+The mutable object is only the **harness**, a directory of files (`harness.ALLOWED_FILES`): prompt notes, a
+mode-specific decision policy (agent mode: instruction text; rule mode: a whitelisted, bounded config), the memory
+policy, and two optional **hook scripts** that implement harness responsibilities (`hooks/select_memory.py`: how
+memory is retrieved; `hooks/render_notes.py`: how the context that reaches the agent is organised). The boundary is
+by responsibility, not by file extension. AIDE, the task environment and the evaluator are never touched.
+
+## How the harness is improved (2026-09-20 redesign: direct edits, not prescribed patches)
+
+*What* is changed = the harness files above. *How* = the improver agent edits them directly.
+
+1. `loop.improve` builds a private workspace: `harness/` (editable copy of H_t) + `context/` (read-only:
+   `SUMMARY.md`, `runs.json`, `memory.json`, `history.json`, `INSTRUCTIONS.md`).
+2. The improver (`rsi_mvp/improver.py`; `AgentImprover` = an LLM with `list/read/write/delete/check/finish` tools)
+   edits `harness/` freely: no "one component per patch", no "append N characters".
+3. The framework then checks **scope** (only `ALLOWED_FILES`; `context/` untouched; size, bounds, forbidden
+   text) and **runnability** (JSON parses, hooks pass the static policy and actually render notes in the sandbox).
+   Only a harness that passes becomes H_{t+1}; status is `proposed | no_change | rejected | error`.
+4. `diff.patch` (file-level) and `improver_record.json` (summary, transcript, scope report) are written next to the
+   version: a post-hoc record, never an input.
+
+Hook scripts run in `rsi_mvp/hooks.py`'s sandbox (AST policy: pure text/data helpers only; fresh `python -I`
+process, cleared environment, timeout, CPU/memory limits). That is defence in depth against accidents of our own
+improver, **not** a security boundary against an adversary. The legacy bounded-JSON-patch improver is kept as
+`--improver patch` (`PatchImprover`); `MockImprover` does deterministic direct edits for offline runs.
+
+A version's notes are a function of (harness, memory written before that version existed), so the notes checked
+at collect time equal those submitted at plan time even while replicates are collected one by one. Switching
+`memory_policy.render` to `lessons` is allowed (it is harness) but reported as a confound in the scope warnings.
 
 ## Spec -> code
 
@@ -27,7 +53,7 @@ memory policy. AIDE, the task environment and the evaluator are never touched.
 | 7 verifier bank, issue-scanner reuse | `rsi_mvp/verifiers/`, `vendor/issue_scanner/audit_run.py` (unmodified copy) |
 | 8 verifier-as-reward, raw vector | `verifiers.run_bank` -> `reward_vector` (never collapsed) |
 | 9 memory | `rsi_mvp/memory.py` -> `harness_versions/<task>/<mode>/memory.jsonl` |
-| 10 meta-improver | `rsi_mvp/meta_improver.py`, `rsi_mvp/llm.py` |
+| 10 meta-improver | `rsi_mvp/improver.py` (direct-edit agent, workspace, tools), `rsi_mvp/hooks.py` (hook sandbox), `rsi_mvp/meta_improver.py` (evidence + legacy patch), `rsi_mvp/llm.py` |
 | 11 main loop, freeze, held-out | `rsi_mvp/loop.py`, `rsi_mvp/cli.py` |
 
 Six of the seven spec verifiers are implemented by routing the scanner's detectors
@@ -55,7 +81,7 @@ with `role: test`.
 
 ```bash
 pip install pyyaml pandas pytest          # pandas: the scanner's submission checks
-python -m pytest -q                       # 127 tests, no CRC / LLM / research repo needed
+python -m pytest -q                       # 158 tests, no CRC / LLM / research repo needed
 
 # offline plumbing check over archived runs (mock meta-improver; NOT an experiment)
 python -m rsi_mvp replay-demo --task random_acts_of_pizza --mode rule --runs RUN_A RUN_B RUN_C
@@ -69,7 +95,8 @@ python -m rsi_mvp init   --task random_acts_of_pizza                       # H0 
 python -m rsi_mvp submit --task random_acts_of_pizza --mode agent --round 0 [--dry-run]
 python -m rsi_mvp status
 python -m rsi_mvp collect --task random_acts_of_pizza --mode agent --round 0 --job-id <ID>
-python -m rsi_mvp improve --task random_acts_of_pizza --mode agent --round 0 --llm openai
+python -m rsi_mvp improve --task random_acts_of_pizza --mode agent --round 0 --llm openai \
+       [--improver agent|patch] [--max-steps 30]     # agent (default) edits harness files directly
 #   ...repeat submit/collect/improve for round 1, 2 ...
 python -m rsi_mvp freeze --task random_acts_of_pizza --mode agent
 python -m rsi_mvp submit --task insults_heldout --mode agent --round -1 \
@@ -128,6 +155,8 @@ already exposes; every variable set is in `scripts/_common.sh`'s caller-override
 * "Fixed seeds": AIDE/LLM calls are not bit-for-bit deterministic. `replicates` label matched
   runs (optionally with a pinned first draft). Only the offline pipeline (verifiers, memory,
   mock meta-improver, versioning) replays byte-identically.
-* `MockMetaLLM` applies a fixed verifier -> patch table. It proves plumbing, not the method.
+* `MockMetaLLM` / `MockImprover` apply a fixed verifier -> edit table. They prove plumbing, not the method.
+* The direct-edit `AgentImprover` is covered offline by `ScriptedToolLLM` only; it has **not** yet been run
+  against a real model (the local key is disabled; run it on CRC first with `--max-steps` small).
 * Verifier detectors that use hidden-test scores (`S3/S4/S7`) run only on train tasks before the
   freeze; held-out results are read only after it.

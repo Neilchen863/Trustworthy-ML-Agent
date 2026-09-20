@@ -3,7 +3,7 @@
     per round t, per training task:
         submit   run the existing AIDE mode with H_t          (runner.py, on CRC)
         collect  trajectory + verifier rewards + performance   -> memory update
-        improve  meta-improver proposes a bounded patch        -> H_{t+1} (versioned)
+        improve  the improver edits the harness FILES directly  -> H_{t+1} (versioned)
     freeze       fix H_final and its memory snapshot
     heldout      run/compare H0 vs H_final on tasks whose official grade the
                  meta-improver never saw
@@ -22,7 +22,9 @@ from pathlib import Path
 from . import meta_improver
 from .collect import collect
 from .guards import ExposureLedger, assert_train, verify_heldout_clean
-from .harness import DEFAULT_MEMORY_POLICY, Harness, HarnessStore, PatchError
+from .harness import DEFAULT_MEMORY_POLICY, Harness, HarnessStore, PatchError, validate_files
+from .hooks import HookError
+from .improver import ImproveContext, PatchImprover, contract_text, prepare_workspace
 from .memory import MemoryStore
 from .runner import DryRunBackend, RunPlan, SgeBackend, make_plan
 from .schemas import make_event
@@ -83,20 +85,32 @@ class RsiProject:
         return h0
 
     # ------------------------------------------------------------------ render
+    def _memory_for(self, harness_task: str, mode: str, harness: Harness) -> list[dict]:
+        """The memory records H_n may use: those written BEFORE H_n existed (round < n).  Filtering by round makes
+        the notes of a version a pure function of (harness, memory so far), so the notes checked at collect time are
+        the notes submitted at plan time even though replicates of the same round are collected one by one."""
+        n = int(harness.version[1:])
+        return [r for r in self.memory(harness_task, mode).all() if r.get("round", -1) < n]
+
+    @staticmethod
+    def _uses_memory(harness: Harness) -> bool:
+        return harness.memory_render == "lessons" or "hooks/render_notes.py" in harness.hooks
+
     def render_notes(self, harness_task: str, mode: str, version: str) -> str:
-        """Notes text for a run.  Training runs use live memory; a frozen harness
-        uses the memory snapshot taken at freeze time; H0 is the memory-free control."""
+        """Notes text for a run.  Training runs use live memory; a frozen harness uses the memory snapshot taken at
+        freeze time; H0 is the memory-free control.  Memory selection and composition follow the harness (its
+        memory_policy and, if present, its hook scripts)."""
         store = self.store(harness_task, mode)
         harness = store.load(version)
         frozen = self.frozen(harness_task, mode)
-        if version == "H0" or harness.memory_render == "none":
-            lessons = ""
-        elif frozen and frozen["version"] == version:
-            lessons = frozen["memory_lessons"]
-        else:
-            mp = harness.memory_policy
-            lessons = self.memory(harness_task, mode).render_lessons(mp["max_records"], mp["max_chars"])
-        return harness.render_notes(lessons)
+        round_ = int(version[1:])
+        if version == "H0" or not self._uses_memory(harness):
+            return harness.render((), round_)
+        if frozen and frozen["version"] == version:
+            if "memory_records" in frozen:
+                return harness.render(frozen["memory_records"], round_)
+            return harness.render_notes(frozen["memory_lessons"])             # snapshot taken before hooks existed
+        return harness.render(harness.select_records(self._memory_for(harness_task, mode, harness)), round_)
 
     # ------------------------------------------------------------------ submit
     def plan_run(self, task_name: str, mode: str, round_: int, replicate: int = 1,
@@ -183,10 +197,33 @@ class RsiProject:
         return record
 
     # ----------------------------------------------------------------- improve
-    def improve(self, task_name: str, mode: str, round_: int, llm) -> dict:
+    def _history(self, task_name: str, mode: str, upto_round: int) -> list[dict]:
+        """What earlier improver sessions did and what each harness version scored: shown to the improver so that
+        it can see the trajectory (train tasks only; official grades of train runs are already its evidence)."""
+        scores = {row["harness_version"]: row for row in self.summarize(task_name, mode) if row["round"] <= upto_round}
+        out = []
+        for path in sorted(self.rounds_root.glob(f"round_*/{task_name}/{mode}/meta_improver.json")):
+            rec = json.loads(path.read_text())
+            out.append({"round": int(path.parents[2].name.split("_")[1]), "from_version": rec.get("from_version"),
+                        "new_version": rec.get("new_version"), "status": rec.get("status"),
+                        "summary": rec.get("summary"), "changed_files": rec.get("changed_files"),
+                        "score_of_from_version": scores.get(rec.get("from_version"))})
+        return [h for h in out if h["round"] < upto_round]
+
+    @staticmethod
+    def _as_improver(improver):
+        """A bare LLM (complete(system, user)) is the legacy bounded-patch improver."""
+        return improver if hasattr(improver, "improve") else PatchImprover(improver)
+
+    def improve(self, task_name: str, mode: str, round_: int, improver) -> dict:
+        """Run the improver over this round's evidence in an independent workspace; check that what it produced
+        stays inside the harness boundary and runs; commit it as H_{t+1}.  The improver may be an `improver.py`
+        object (direct file edits) or a bare LLM (legacy patch).  Status is one of proposed | no_change |
+        rejected | error; only "proposed" creates a version."""
         task = self.task(task_name)
         assert_train(task.role, "run the meta-improver")
         self._assert_not_frozen(task_name, mode, "run the meta-improver")
+        improver = self._as_improver(improver)
         rdir = self._round_dir(round_, task_name, mode)
         records = [json.loads(p.read_text()) for p in sorted(rdir.glob("*/run_record.json"))]
         if not records:
@@ -202,20 +239,63 @@ class RsiProject:
                             "an undelivered harness would make this round meaningless")
         harness = store.load(store.latest())
         memory = self.memory(task_name, mode).all()
-        # the official grades are about to be shown to the meta-improver: log it first
+        # the official grades are about to be shown to the improver: log it first
         for r in records:
             self.ledger.record(task_name, task.competition_id, r["run_id"], round_, r["harness_version"])
-        result = meta_improver.propose(llm, harness, records, memory)
-        new_version = None
-        if result["status"] == "proposed":
+        payload = meta_improver.build_input(harness, records, memory)
+        ctx = ImproveContext(harness, mode, records, memory, payload, self._history(task_name, mode, round_))
+        ws = prepare_workspace(rdir / "improver_workspace", ctx)
+        evidence_before = self._context_hashes(ws)
+        try:
+            out = improver.improve(ws, ctx)
+        except Exception as exc:                                    # an improver crash is a recorded outcome, not a lost round
+            out = {"outcome": "error", "reason": f"{type(exc).__name__}: {exc}", "steps": 0, "transcript": []}
+
+        files = ws.read_files()
+        report = validate_files(files, mode, harness.to_files(), memory or None)
+        status, reason, new_version = self._judge(out, harness, files, report, evidence_before, ws)
+        if status == "proposed":
+            record = {"improver": improver.name, "provider": improver.provider, "model": improver.model,
+                      "summary": out.get("summary"), "steps": out.get("steps"), "scope": report.to_dict(),
+                      "transcript": out.get("transcript")}
             try:
-                new = store.commit_patch(harness, result["patch"])
-                new_version = new.version
-            except PatchError as exc:
-                result["status"], result["reason"] = "rejected", str(exc)
-        result["new_version"] = new_version
+                new_version = store.commit_files(harness, files, record, patch=out.get("patch")).version
+            except (PatchError, HookError) as exc:
+                status, reason = "rejected", str(exc)
+        result = {
+            "status": status, "reason": reason, "improver": improver.name, "provider": improver.provider,
+            "model": improver.model, "mode": mode, "from_version": harness.version, "new_version": new_version,
+            "summary": out.get("summary"), "changed_files": report.changed, "warnings": report.warnings,
+            "violations": report.violations, "steps": out.get("steps"), "patch": out.get("patch"),
+            "input_sha256": out.get("input_sha256") or hashlib.sha256(
+                (contract_text(mode) + json.dumps(payload, sort_keys=True, default=str)).encode()).hexdigest(),
+            "input": payload, "raw_response": out.get("raw_response"), "transcript": out.get("transcript"),
+            "workspace": str(ws.root)}
         _write_json(rdir / "meta_improver.json", result)
         return result
+
+    @staticmethod
+    def _context_hashes(ws) -> dict:
+        return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(ws.context_dir.iterdir())}
+
+    def _judge(self, out: dict, harness: Harness, files: dict, report, evidence_before: dict, ws):
+        """(status, reason, None) for what the improver left in its workspace."""
+        outcome = out.get("outcome")
+        if outcome == "error":
+            return "error", out.get("reason"), None
+        if outcome in ("no_change", "rejected"):
+            return ("no_change" if outcome == "no_change" else "rejected"), out.get("reason"), None
+        if outcome != "edited":
+            return "rejected", out.get("reason") or f"improver outcome {outcome!r}", None
+        if self._context_hashes(ws) != evidence_before:
+            return "rejected", "the improver modified the read-only evidence in context/", None
+        if not report.ok:
+            return "rejected", "; ".join(report.violations), None
+        candidate = Harness.from_files(files, harness.task, harness.mode, "Hx", harness.version).to_files()
+        strip = lambda fs: {k: v for k, v in fs.items() if k != "CHANGES.md"}
+        if strip(candidate) == strip(harness.to_files()):
+            return "no_change", "the improver finished without changing anything that reaches the agent", None
+        return "proposed", None, None
 
     # ------------------------------------------------------------------ freeze
     def frozen_path(self, task: str, mode: str) -> Path:
@@ -241,11 +321,12 @@ class RsiProject:
         if version not in store.versions():
             raise LoopError(f"unknown harness version {version!r}")
         harness = store.load(version)
-        mp = harness.memory_policy
-        lessons = (self.memory(task_name, mode).render_lessons(mp["max_records"], mp["max_chars"])
-                   if version != "H0" and harness.memory_render == "lessons" else "")
+        records = (harness.select_records(self._memory_for(task_name, mode, harness))
+                   if version != "H0" and self._uses_memory(harness) else [])
+        blob = json.dumps(records, sort_keys=True, ensure_ascii=False)
         info = {"task": task_name, "mode": mode, "version": version, "harness_sha256": harness.sha256(),
-                "memory_lessons": lessons, "memory_sha256": hashlib.sha256(lessons.encode()).hexdigest(),
+                "memory_records": records, "memory_sha256": hashlib.sha256(blob.encode()).hexdigest(),
+                "frozen_notes_sha256": hashlib.sha256(harness.render(records, int(version[1:])).encode()).hexdigest(),
                 "frozen_at": _now()}
         _write_json(self.frozen_path(task_name, mode), info)
         return info

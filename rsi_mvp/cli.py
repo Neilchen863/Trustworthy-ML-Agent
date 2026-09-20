@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .guards import ContaminationError
 from .harness import PatchError
+from .improver import AgentImprover, MockImprover, PatchImprover
 from .llm import LLMError, MockMetaLLM, OpenAIChat
 from .loop import LoopError, RsiProject
 from .runner import DryRunBackend, RunnerError, SgeBackend
@@ -41,6 +42,15 @@ def _llm(args):
     if args.llm == "mock":
         return MockMetaLLM()
     return OpenAIChat(model=args.meta_model)
+
+
+def _improver(args):
+    """`agent` (default): the improver edits the harness files directly.  `patch`: legacy bounded JSON patch."""
+    if getattr(args, "improver", "agent") == "patch":
+        return PatchImprover(_llm(args))
+    if args.llm == "mock":
+        return MockImprover()
+    return AgentImprover(OpenAIChat(model=args.meta_model), max_steps=args.max_steps)
 
 
 def _run_dir(project: RsiProject, args, task_name: str) -> Path:
@@ -96,8 +106,9 @@ def cmd_collect(args) -> None:
 
 
 def cmd_improve(args) -> None:
-    res = _project(args).improve(args.task, args.mode, args.round, _llm(args))
-    print(json.dumps({k: res[k] for k in ("status", "reason", "patch", "new_version", "provider", "model")}, indent=2))
+    res = _project(args).improve(args.task, args.mode, args.round, _improver(args))
+    print(json.dumps({k: res[k] for k in ("status", "reason", "improver", "summary", "changed_files", "warnings",
+                                          "new_version", "provider", "model")}, indent=2))
 
 
 def cmd_freeze(args) -> None:
@@ -119,7 +130,7 @@ def cmd_drive(args) -> None:
     """Unattended training rounds (no freeze, no held-out).  Resumable; halts on anything unexpected."""
     from .driver import Driver
     p = _project(args)
-    driver = Driver(p, _backend(args), _llm(args), args.task, args.modes, args.last_round,
+    driver = Driver(p, _backend(args), _improver(args), args.task, args.modes, args.last_round,
                     Path(args.aide_root) if args.aide_root else None, args.poll_secs,
                     log=lambda m: print(m, flush=True), replicates=args.replicates)
     outcome = driver.run()
@@ -147,7 +158,7 @@ def cmd_replay_demo(args) -> None:
     work = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="rsi_replay_"))
     p = RsiProject(args.tasks_dir, work)
     p.init_harness(args.task, args.mode)
-    llm = MockMetaLLM()
+    improver = MockImprover()
     print(f"# replay workdir: {work}")
     for round_, run_dir in enumerate(args.runs):
         version = p.store(args.task, args.mode).latest()
@@ -156,9 +167,9 @@ def cmd_replay_demo(args) -> None:
               f"score={rec['task_performance'] and rec['task_performance']['score']}")
         print(f"   reward_vector: {rec['reward_vector']}")
         if round_ < len(args.runs) - 1:
-            res = p.improve(args.task, args.mode, round_, llm)
-            print(f"   meta-improver[{res['provider']}] -> {res['status']} {res['new_version'] or ''} "
-                  f"{json.dumps(res['patch']['proposed_patch'])[:150] if res['patch'] else res['reason']}")
+            res = p.improve(args.task, args.mode, round_, improver)
+            print(f"   improver[{res['provider']}] -> {res['status']} {res['new_version'] or ''} "
+                  f"changed {res['changed_files']}: {res['summary'] or res['reason']}")
     print("harness versions:", p.store(args.task, args.mode).versions())
 
 
@@ -203,11 +214,15 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--harness-task", required=True); sp.add_argument("--replicate", type=int, default=1)
             sp.set_defaults(harness=None)
 
-    sp = add("improve", cmd_improve, help="meta-improver: propose H_{t+1}")
+    sp = add("improve", cmd_improve, help="improver edits the harness files directly -> H_{t+1}")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])
     sp.add_argument("--round", type=int, required=True)
     sp.add_argument("--llm", choices=["mock", "openai"], default="openai")
     sp.add_argument("--meta-model", default="gpt-4o-2024-08-06")
+    sp.add_argument("--improver", choices=["agent", "patch"], default="agent",
+                    help="agent (default): edits the harness files directly in an independent workspace; "
+                         "patch: legacy single bounded JSON patch applied by the program")
+    sp.add_argument("--max-steps", type=int, default=30, help="tool-call turns the agent improver may use")
 
     sp = add("freeze", cmd_freeze, help="freeze H_final (+ memory snapshot)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])
@@ -225,6 +240,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="replicate ids per (mode, round); default = task.yaml `replicates`")
     sp.add_argument("--llm", choices=["mock", "openai"], default="openai")
     sp.add_argument("--meta-model", default="gpt-4o-2024-08-06")
+    sp.add_argument("--improver", choices=["agent", "patch"], default="agent",
+                    help="agent (default): edits the harness files directly in an independent workspace; "
+                         "patch: legacy single bounded JSON patch applied by the program")
+    sp.add_argument("--max-steps", type=int, default=30, help="tool-call turns the agent improver may use")
 
     sp = add("summarize", cmd_summarize, help="per-round score mean/sd and mirage rate over replicates (train tasks)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", default="all", choices=["all", "rule", "agent"])

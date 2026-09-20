@@ -40,24 +40,19 @@ class OpenAIChat:
         self.model, self.api_key_env, self.base_url = model, api_key_env, base_url.rstrip("/")
         self.temperature, self.retries, self.timeout = temperature, retries, timeout
 
-    def complete(self, system: str, user: str) -> str:
+    def _post(self, body: dict) -> dict:
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
             raise LLMError(f"{self.api_key_env} is not set (on CRC: source the run.env that holds the key)")
-        body = json.dumps({
-            "model": self.model, "temperature": self.temperature,
-            "response_format": {"type": "json_object"},
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        }).encode()
+        data = json.dumps(body).encode()
         last = None
         for attempt in range(self.retries):
             req = urllib.request.Request(
-                f"{self.base_url}/chat/completions", data=body, method="POST",
+                f"{self.base_url}/chat/completions", data=data, method="POST",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode())
-                return data["choices"][0]["message"]["content"]
+                    return json.loads(resp.read().decode())
             except urllib.error.HTTPError as exc:
                 last = f"HTTP {exc.code}: {exc.read().decode(errors='ignore')[:200]}"
                 if exc.code not in (429, 500, 502, 503, 504):
@@ -66,6 +61,47 @@ class OpenAIChat:
                 last = f"{type(exc).__name__}: {exc}"
             time.sleep(2 ** attempt)
         raise LLMError(f"meta-improver call failed: {last}")
+
+    def complete(self, system: str, user: str) -> str:
+        data = self._post({
+            "model": self.model, "temperature": self.temperature,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        })
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            raise LLMError(f"unexpected response shape: {exc}")
+
+    def chat_tools(self, messages: list, tools: list) -> dict:
+        """One turn of a tool-use conversation (OpenAI function calling).  Returns the assistant message,
+        including its `tool_calls`, exactly as the API produced it."""
+        data = self._post({"model": self.model, "temperature": self.temperature, "messages": messages,
+                           "tools": tools, "tool_choice": "auto"})
+        try:
+            return data["choices"][0]["message"]
+        except (KeyError, IndexError) as exc:
+            raise LLMError(f"unexpected response shape: {exc}")
+
+
+class ScriptedToolLLM:
+    """Replays a fixed list of assistant turns (each a list of (tool_name, arguments_dict) calls, or a text
+    string).  Drives the improver's tool loop offline: tests, demos and the smoke of the plumbing."""
+    provider, model = "scripted", "scripted-v1"
+
+    def __init__(self, turns):
+        self.turns, self.seen = list(turns), []
+
+    def chat_tools(self, messages, tools):
+        self.seen.append(messages[-1])
+        if not self.turns:
+            return {"role": "assistant", "content": "done", "tool_calls": None}
+        turn = self.turns.pop(0)
+        if isinstance(turn, str):
+            return {"role": "assistant", "content": turn, "tool_calls": None}
+        return {"role": "assistant", "content": None, "tool_calls": [
+            {"id": f"call_{len(self.seen)}_{i}", "type": "function",
+             "function": {"name": name, "arguments": json.dumps(args)}} for i, (name, args) in enumerate(turn)]}
 
 
 class MockMetaLLM:

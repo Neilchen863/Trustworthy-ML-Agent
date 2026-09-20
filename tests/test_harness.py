@@ -93,7 +93,8 @@ def test_store_versions_diff_and_git(state, agent_h):
     assert store.versions() == ["H0", "H1"] and store.latest() == "H1" and store.next_version() == "H2"
     vdir = store.version_dir("H1")
     diff = (vdir / "diff.patch").read_text()
-    assert "+  \"prompt_notes\": \"Verify the output.\"" in diff and "-  \"prompt_notes\": \"\"" in diff
+    assert "--- H0/harness/prompt_notes.md" in diff and "+++ H1/harness/prompt_notes.md" in diff
+    assert "+Verify the output." in diff                      # a file-level record, not an edit format
     assert json.loads((vdir / "patch.json").read_text())["target_component"] == "prompt"
     assert json.loads((vdir / "version.json").read_text())["parent"] == "H0"
     assert store.load("H1") == h1
@@ -116,3 +117,25 @@ def test_store_outside_git_degrades_to_a_warning(tmp_path, agent_h):
     store = HarnessStore(tmp_path / "hv", "t", "agent")
     store.create_initial(agent_h)
     assert (store.version_dir("H0") / "NOT_COMMITTED.txt").exists()
+
+
+
+def test_a_legacy_single_json_version_still_loads(tmp_path):
+    """The first pilot stored versions as one harness.json; those must remain readable."""
+    legacy = Harness(task="t", mode="rule", version="H1", parent="H0", prompt_notes="old advice",
+                     rule_config={"max_stagnation": 15, "debug_prob": 1.0, "max_debug_depth": 20, "num_drafts": 5},
+                     memory_policy={"max_records": 5, "max_chars": 1500})          # no `render` key: pilot format
+    vdir = tmp_path / "hv" / "t" / "rule" / "H1"
+    vdir.mkdir(parents=True)
+    (vdir / "harness.json").write_text(json.dumps(legacy.to_dict()))
+    loaded = HarnessStore(tmp_path / "hv", "t", "rule").load("H1")
+    assert loaded == legacy and loaded.memory_render == "lessons"
+
+
+def test_a_directory_version_round_trips_exactly(state, agent_h):
+    store = HarnessStore(state / "harness_versions", "t", "agent")
+    store.create_initial(agent_h)
+    h1 = store.commit_patch(agent_h, patch("prompt", {"op": "append", "text": "Line one.\nLine two."}))
+    assert store.load("H1") == h1
+    assert (store.version_dir("H1") / "harness" / "prompt_notes.md").read_text() == "Line one.\nLine two."
+    assert not (store.version_dir("H1") / "harness.json").exists()

@@ -87,22 +87,28 @@ class MemoryStore:
 
     # ------------------------------------------------------------------- read
     def retrieve(self, max_records: int) -> list[dict]:
-        """Worst reward first, newest first among ties; one record per distinct
-        lesson so a repeated failure does not crowd out other lessons."""
-        seen, out = set(), []
-        ranked = sorted(enumerate(self.all()), key=lambda t: (t[1]["reward"], -t[0]))
-        for _, rec in ranked:
-            if rec["verifier"] == "none" or rec["lesson"] in seen:
-                continue
-            seen.add(rec["lesson"])
-            out.append(rec)
-            if len(out) >= max_records:
-                break
-        return out
+        return retrieve_from(self.all(), max_records)
 
     def render_lessons(self, max_records: int, max_chars: int) -> str:
-        lines = []
-        for rec in self.retrieve(max_records):
-            lines.append(f"- {rec['lesson']}")
-        text = "\n".join(lines)
-        return text if len(text) <= max_chars else text[:max_chars].rsplit("\n", 1)[0]
+        return lessons_text(self.retrieve(max_records), max_chars)
+
+
+def retrieve_from(records: list[dict], max_records: int) -> list[dict]:
+    """Default retrieval rule: worst reward first, newest first among ties; one record per distinct
+    lesson so a repeated failure does not crowd out other lessons.  (A harness may replace this with
+    `hooks/select_memory.py`.)"""
+    seen, out = set(), []
+    ranked = sorted(enumerate(records), key=lambda t: (t[1]["reward"], -t[0]))
+    for _, rec in ranked:
+        if rec["verifier"] == "none" or rec["lesson"] in seen:
+            continue
+        seen.add(rec["lesson"])
+        out.append(rec)
+        if len(out) >= max_records:
+            break
+    return out
+
+
+def lessons_text(records: list[dict], max_chars: int) -> str:
+    text = "\n".join(f"- {rec['lesson']}" for rec in records)
+    return text if len(text) <= max_chars else text[:max_chars].rsplit("\n", 1)[0]

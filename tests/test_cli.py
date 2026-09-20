@@ -35,4 +35,4 @@ def test_replay_demo_end_to_end(tasks_dir, state, tmp_path, capsys):
     run_cli(tasks_dir, state, "replay-demo", "--task", "random_acts_of_pizza", "--mode", "rule",
             "--workdir", str(tmp_path / "w"), "--runs", *map(str, runs))
     out = capsys.readouterr().out
-    assert "harness versions: ['H0', 'H1', 'H2']" in out and out.count("meta-improver[mock]") == 2
+    assert "harness versions: ['H0', 'H1', 'H2']" in out and out.count("improver[mock]") == 2

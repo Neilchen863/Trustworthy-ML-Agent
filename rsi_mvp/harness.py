@@ -11,9 +11,16 @@ H_t is *only* data that the existing AIDE runner already knows how to consume:
   memory_policy    how many / how long the memory lessons are, and whether they are rendered into the
                    notes at all (`render`: none | lessons; see DEFAULT_MEMORY_POLICY).
 
-Nothing else is reachable: no AIDE source, no task environment, no evaluator.
-A patch is validated, bounded and stored with its exact diff; an invalid patch
-never produces a new version.
+  hooks/           optional harness-layer scripts: how memory is retrieved (`select_memory.py`) and how the
+                   context reaching the agent is organised (`render_notes.py`).  They are code, but they are
+                   harness responsibilities, so editing them is editing the harness (see hooks.py for the sandbox).
+
+A harness version is a DIRECTORY of files (ALLOWED_FILES).  The improver agent edits a private copy of that
+directory directly; the framework then checks the scope (only those files, nothing else) and that the result
+runs, and stores the new version with a file-level diff as a post-hoc record.  Nothing else is reachable: no AIDE
+source, no task data, no evaluator.
+
+The older bounded-JSON-patch path (`apply_patch`) is kept as a legacy improver (`--improver patch`).
 """
 from __future__ import annotations
 
@@ -22,10 +29,11 @@ import difflib
 import hashlib
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .hooks import HOOKS, HookError, check_source, run_hook
 from .schemas import MODES
 
 # ------------------------------------------------------------------ whitelists
@@ -36,7 +44,7 @@ RULE_BOUNDS = {
     "max_debug_depth": (0, 20, int),
     "num_drafts": (1, 10, int),
 }
-MEMORY_BOUNDS = {"max_records": (0, 10, int), "max_chars": (0, 3000, int)}
+MEMORY_BOUNDS = {"max_records": (0, 50, int), "max_chars": (0, 20000, int)}
 # `render` decides whether memory lessons are ALSO written into the agent's prompt notes:
 #   "none"    (default for new harnesses) memory feeds only the meta-improver; the agent sees advice only
 #             through patches, so an effect can be attributed to the patch and not to the auto-injected lesson
@@ -45,6 +53,12 @@ MEMORY_BOUNDS = {"max_records": (0, 10, int), "max_chars": (0, 3000, int)}
 # `render` is fixed by the experiment arm and is NOT patchable by the meta-improver (not in MEMORY_BOUNDS).
 DEFAULT_MEMORY_POLICY = {"max_records": 5, "max_chars": 1500, "render": "none"}
 MEMORY_RENDER_MODES = ("none", "lessons")
+
+# The harness boundary, by responsibility.  Anything outside this set is outside the harness.
+ALLOWED_FILES = ("prompt_notes.md", "decision_policy.md", "rule_config.json", "memory_policy.json", "CHANGES.md",
+                 "hooks/select_memory.py", "hooks/render_notes.py")
+MAX_FILE_CHARS = 20_000
+MAX_NOTES_CHARS = 20_000            # what the runner may receive as notes after rendering
 
 TARGETS = ("prompt", "decision_policy", "memory_policy")
 MAX_APPEND_CHARS = 800
@@ -69,10 +83,15 @@ class Harness:
     decision_policy_text: str = ""          # agent mode only
     rule_config: dict | None = None         # rule mode only
     memory_policy: dict | None = None
+    hooks: dict = field(default_factory=dict)   # {"hooks/render_notes.py": source, ...}
+    changes: str = ""                       # free-text CHANGES.md written by the improver
 
     def __post_init__(self):
         if self.mode not in MODES:
             raise PatchError(f"unknown mode {self.mode!r}")
+        unknown = set(self.hooks) - set(HOOKS)
+        if unknown:
+            raise PatchError(f"unknown hook file(s) {sorted(unknown)}")
         if self.memory_policy is None:
             self.memory_policy = dict(DEFAULT_MEMORY_POLICY)
         if self.memory_render not in MEMORY_RENDER_MODES:
@@ -90,17 +109,56 @@ class Harness:
 
     # ---- serialisation
     def to_dict(self) -> dict:
-        return {
+        d = {
             "task": self.task, "mode": self.mode, "version": self.version, "parent": self.parent,
             "prompt_notes": self.prompt_notes, "decision_policy_text": self.decision_policy_text,
             "rule_config": self.rule_config, "memory_policy": self.memory_policy,
         }
+        if self.hooks:                       # only when present, so the hash of a hook-free harness is unchanged
+            d["hooks"] = dict(self.hooks)
+        if self.changes:
+            d["changes"] = self.changes
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Harness":
         return cls(**{k: d.get(k) for k in ("task", "mode", "version", "parent", "prompt_notes",
-                                             "decision_policy_text", "rule_config", "memory_policy")
-                      if k in d})
+                                             "decision_policy_text", "rule_config", "memory_policy",
+                                             "hooks", "changes") if k in d})
+
+    # ---- the file view the improver edits
+    def to_files(self) -> dict[str, str]:
+        files = {"prompt_notes.md": self.prompt_notes,
+                 "memory_policy.json": json.dumps(self.memory_policy, indent=2, sort_keys=True) + "\n"}
+        if self.mode == "agent":
+            files["decision_policy.md"] = self.decision_policy_text
+        else:
+            files["rule_config.json"] = json.dumps(self.rule_config or {}, indent=2, sort_keys=True) + "\n"
+        if self.changes:
+            files["CHANGES.md"] = self.changes
+        files.update(self.hooks)
+        return files
+
+    @classmethod
+    def from_files(cls, files: dict[str, str], task: str, mode: str, version: str, parent: str | None) -> "Harness":
+        """Parse an (already scope-checked) file view.  Raises PatchError on malformed JSON."""
+        def load_json(name, default):
+            if name not in files or not files[name].strip():
+                return default
+            try:
+                value = json.loads(files[name])
+            except json.JSONDecodeError as exc:
+                raise PatchError(f"{name} is not valid JSON: {exc}")
+            if not isinstance(value, dict):
+                raise PatchError(f"{name} must contain a JSON object")
+            return value
+        memory_policy = load_json("memory_policy.json", None)
+        rule_config = load_json("rule_config.json", {}) if mode == "rule" else None
+        return cls(task=task, mode=mode, version=version, parent=parent,
+                   prompt_notes=files.get("prompt_notes.md", ""),
+                   decision_policy_text=files.get("decision_policy.md", "") if mode == "agent" else "",
+                   rule_config=rule_config, memory_policy=memory_policy,
+                   hooks={k: v for k, v in files.items() if k in HOOKS}, changes=files.get("CHANGES.md", ""))
 
     def sha256(self) -> str:
         return hashlib.sha256(json.dumps(self.to_dict(), sort_keys=True).encode()).hexdigest()
@@ -117,6 +175,52 @@ class Harness:
         if memory_lessons.strip():
             parts.append("## Lessons from earlier runs on similar tasks\n" + memory_lessons.strip())
         return "\n\n".join(parts)
+
+    # ---- memory selection and rendering, honouring the harness-layer hooks
+    def select_records(self, all_records: list[dict]) -> list[dict]:
+        """Which memory records reach this harness's notes/rendering.  Default: worst reward first, one per
+        distinct lesson, at most `max_records`.  `hooks/select_memory.py` replaces that rule."""
+        from .memory import retrieve_from             # local import: memory.py does not depend on harness.py
+        limit = int((self.memory_policy or {}).get("max_records", 5))
+        source = self.hooks.get("hooks/select_memory.py")
+        if source is None:
+            return retrieve_from(all_records, limit)
+        slim = [_slim_record(r) for r in all_records]
+        picked = run_hook(source, "select_memory", [slim, self._hook_context(None)])
+        if (not isinstance(picked, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in picked)
+                or len(set(picked)) != len(picked) or any(not 0 <= i < len(all_records) for i in picked)):
+            raise PatchError("select_memory must return a list of distinct valid record indices")
+        return [all_records[i] for i in picked[:max(limit, 0)]]
+
+    def _hook_context(self, round_):
+        return {"mode": self.mode, "round": round_, "prompt_notes": self.prompt_notes,
+                "decision_policy": self.decision_policy_text, "memory_policy": self.memory_policy,
+                "max_chars": MAX_NOTES_CHARS}
+
+    def render(self, memory_records=(), round_=None) -> str:
+        """The exact notes text for a run.  `hooks/render_notes.py` (context organisation) replaces the default
+        composition; without it, memory lessons are appended only if `memory_policy.render == "lessons"`."""
+        from .memory import lessons_text
+        source = self.hooks.get("hooks/render_notes.py")
+        if source is None:
+            mp = self.memory_policy or {}
+            lessons = (lessons_text(list(memory_records), int(mp.get("max_chars", 1500)))
+                       if self.memory_render == "lessons" else "")
+            return self.render_notes(lessons)
+        ctx = {**self._hook_context(round_), "memory": [_slim_record(r) for r in memory_records]}
+        text = run_hook(source, "render_notes", [ctx])
+        if not isinstance(text, str):
+            raise PatchError("render_notes must return a string")
+        if len(text) > MAX_NOTES_CHARS:
+            raise PatchError(f"render_notes returned {len(text)} characters (limit {MAX_NOTES_CHARS})")
+        _check_text(text)
+        return text.strip()
+
+
+def _slim_record(rec: dict) -> dict:
+    """Only what a hook may see of a memory record."""
+    return {k: rec.get(k) for k in ("verifier", "reward", "lesson", "situation", "evidence", "decision_outcome",
+                                    "round", "harness_version", "run_id")}
 
 
 # ------------------------------------------------------------------- validation
@@ -230,13 +334,118 @@ def apply_patch(harness: Harness, patch: dict, new_version: str) -> Harness:
     return new
 
 
+# ------------------------------------------------------- scope and runnability of a file view
+@dataclass
+class ScopeReport:
+    ok: bool
+    violations: list
+    warnings: list
+    changed: list
+    rendered_sample: str | None = None
+
+    def to_dict(self) -> dict:
+        return {"ok": self.ok, "violations": self.violations, "warnings": self.warnings, "changed": self.changed,
+                "rendered_sample_chars": None if self.rendered_sample is None else len(self.rendered_sample)}
+
+
+_SAMPLE_RECORDS = [
+    {"verifier": "validation_mirage", "reward": -0.12, "lesson": "sample lesson A", "situation": "sample",
+     "evidence": "sample evidence", "decision_outcome": "sample", "round": 0, "harness_version": "H0", "run_id": "r1"},
+    {"verifier": "submission_sanity", "reward": -1.0, "lesson": "sample lesson B", "situation": "sample",
+     "evidence": "sample evidence", "decision_outcome": "sample", "round": 0, "harness_version": "H0", "run_id": "r2"},
+]
+
+
+def validate_files(files: dict[str, str], mode: str, parent_files: dict[str, str] | None = None,
+                   sample_records: list[dict] | None = None) -> ScopeReport:
+    """Is this file view (1) inside the harness boundary and (2) runnable?
+
+    Boundary: only ALLOWED_FILES exist - nothing that names AIDE code, task data or the evaluator can be a
+    file of the harness, and prompt text may not point at grader/answer material.  Runnability: JSON parses
+    and is within bounds, hook scripts pass the static policy, and the harness renders notes on sample memory.
+    """
+    v: list[str] = []
+    w: list[str] = []
+    parent_files = parent_files or {}
+    for path, text in files.items():
+        if path not in ALLOWED_FILES:
+            v.append(f"`{path}` is outside the harness boundary; the harness consists only of: "
+                     + ", ".join(ALLOWED_FILES))
+        elif len(text) > MAX_FILE_CHARS:
+            v.append(f"`{path}` is {len(text)} characters (limit {MAX_FILE_CHARS})")
+    for name in ("prompt_notes.md", "decision_policy.md"):
+        low = files.get(name, "").lower()
+        for bad in FORBIDDEN_TEXT:
+            if bad in low:
+                v.append(f"`{name}` mentions forbidden material {bad!r} (grader, answers or hidden data)")
+
+    def parse(name):
+        try:
+            value = json.loads(files[name] or "{}")
+        except json.JSONDecodeError as exc:
+            v.append(f"`{name}` is not valid JSON: {exc}")
+            return None
+        if not isinstance(value, dict):
+            v.append(f"`{name}` must contain a JSON object")
+            return None
+        return value
+
+    if "rule_config.json" in files:
+        cfg = parse("rule_config.json")
+        if cfg is not None:
+            try:
+                validate_rule_values(cfg, partial=True)
+            except PatchError as exc:
+                v.append(f"`rule_config.json`: {exc}")
+        if mode == "agent":
+            w.append("`rule_config.json` is ignored in agent mode")
+    if mode == "rule" and files.get("decision_policy.md", "").strip():
+        w.append("`decision_policy.md` is ignored in rule mode (the rule policy does not read prompts)")
+    if "memory_policy.json" in files:
+        mp = parse("memory_policy.json")
+        if mp is not None:
+            extra = set(mp) - {"max_records", "max_chars", "render"}
+            if extra:
+                v.append(f"`memory_policy.json` has unknown key(s) {sorted(extra)}")
+            try:
+                _validate_memory_values({k: mp[k] for k in ("max_records", "max_chars") if k in mp})
+            except PatchError as exc:
+                v.append(f"`memory_policy.json`: {exc}")
+            if "render" in mp and mp["render"] not in MEMORY_RENDER_MODES:
+                v.append(f"`memory_policy.json`: render must be one of {MEMORY_RENDER_MODES}")
+    for path, entry in HOOKS.items():
+        if path in files:
+            v.extend(f"`{path}`: {problem}" for problem in check_source(files[path], entry))
+    changed = sorted(p for p in set(files) | set(parent_files) if files.get(p) != parent_files.get(p))
+    if "memory_policy.json" in changed and parent_files:
+        def _render(fs):
+            try:
+                return json.loads(fs.get("memory_policy.json") or "{}").get("render")
+            except (json.JSONDecodeError, AttributeError):
+                return None
+        if _render(files) != _render(parent_files):
+            w.append("`memory_policy.json` changes how memory reaches the agent's prompt: effects of this version "
+                     "are confounded with the memory lessons it now receives")
+    if v:
+        return ScopeReport(False, v, w, changed)
+    rendered = None
+    try:
+        h = Harness.from_files(files, "t", mode, "Hx", None)
+        records = _SAMPLE_RECORDS if sample_records is None else sample_records
+        rendered = h.render(h.select_records(records), round_=0)
+    except (PatchError, HookError) as exc:
+        v.append(f"does not run: {exc}")
+    return ScopeReport(not v, v, w, changed, rendered)
+
+
 # ----------------------------------------------------------------------- store
 class HarnessStore:
     """harness_versions/<task>/<mode>/{H0,H1,...}/ + memory.jsonl (spec section 5).
 
-    Each version directory holds harness.json, version.json (metadata), and for
-    t>0 patch.json + diff.patch (the exact diff against the parent).  Every
-    version is committed to Git and tagged `harness/<task>/<mode>/<version>`.
+    Each version directory holds `harness/` (the harness files), version.json (metadata) and, for t>0,
+    diff.patch (file-level diff against the parent, a post-hoc record) plus patch.json (legacy patch improver) or
+    improver_record.json (direct-edit improver).  Versions written by the first pilot hold a single harness.json
+    instead; `load` reads both.  Every version is committed to Git and tagged `harness/<task>/<mode>/<version>`.
     """
 
     def __init__(self, root: str | Path, task: str, mode: str):
@@ -262,7 +471,16 @@ class HarnessStore:
         return vs[-1] if vs else None
 
     def load(self, version: str) -> Harness:
-        return Harness.from_dict(json.loads((self.version_dir(version) / "harness.json").read_text()))
+        vdir = self.version_dir(version)
+        hdir = vdir / "harness"
+        if hdir.is_dir():                                     # current format: a directory of harness files
+            files = {str(p.relative_to(hdir)): p.read_text() for p in sorted(hdir.rglob("*")) if p.is_file()}
+            parent = json.loads((vdir / "version.json").read_text()).get("parent")
+            return Harness.from_files(files, self.task, self.mode, version, parent)
+        return Harness.from_dict(json.loads((vdir / "harness.json").read_text()))   # legacy single-JSON version
+
+    def files(self, version: str) -> dict[str, str]:
+        return self.load(version).to_files()
 
     def create_initial(self, harness: Harness) -> Path:
         if harness.version != "H0" or harness.parent is not None:
@@ -275,28 +493,50 @@ class HarnessStore:
         latest = self.latest()
         return "H0" if latest is None else f"H{int(latest[1:]) + 1}"
 
+    @staticmethod
+    def diff_files(old: dict[str, str], new: dict[str, str], old_version: str, new_version: str) -> str:
+        """File-level unified diff between two harness versions - a post-hoc record, not an edit format."""
+        out = []
+        for path in sorted(set(old) | set(new)):
+            a, b = old.get(path), new.get(path)
+            if a == b:
+                continue
+            out.extend(difflib.unified_diff(
+                (a or "").splitlines(True), (b or "").splitlines(True),
+                fromfile=f"{old_version}/harness/{path}" if a is not None else "/dev/null",
+                tofile=f"{new_version}/harness/{path}" if b is not None else "/dev/null"))
+        return "".join(out)
+
     def commit_patch(self, parent: Harness, patch: dict) -> Harness:
-        """Validate + apply + persist H_{t+1}; returns it.  Raises PatchError."""
+        """Legacy path: validate + apply a bounded JSON patch + persist H_{t+1}.  Raises PatchError."""
         new = apply_patch(parent, patch, self.next_version())
-        old_text = json.dumps(parent.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
-        new_text = json.dumps(new.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
-        diff = "".join(difflib.unified_diff(
-            old_text.splitlines(True), new_text.splitlines(True),
-            fromfile=f"{parent.version}/harness.json", tofile=f"{new.version}/harness.json"))
-        self._write(new, patch, diff)
+        self._write(new, patch, self.diff_files(parent.to_files(), new.to_files(), parent.version, new.version))
         return new
 
-    def _write(self, harness: Harness, patch: dict | None, diff: str) -> Path:
+    def commit_files(self, parent: Harness, files: dict[str, str], record: dict | None = None,
+                     patch: dict | None = None) -> Harness:
+        """Persist the improver's edited file view as H_{t+1}.  The caller has already run `validate_files`.
+        `patch` is only given by the legacy patch improver, whose JSON patch is kept next to the files."""
+        new = Harness.from_files(files, self.task, self.mode, self.next_version(), parent.version)
+        self._write(new, patch, self.diff_files(parent.to_files(), new.to_files(), parent.version, new.version), record)
+        return new
+
+    def _write(self, harness: Harness, patch: dict | None, diff: str, record: dict | None = None) -> Path:
         vdir = self.version_dir(harness.version)
         vdir.mkdir(parents=True, exist_ok=False)
-        (vdir / "harness.json").write_text(
-            json.dumps(harness.to_dict(), indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+        for path, text in harness.to_files().items():
+            target = vdir / "harness" / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
         meta = {"version": harness.version, "parent": harness.parent, "sha256": harness.sha256(),
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         if patch is not None:
             (vdir / "patch.json").write_text(json.dumps(patch, indent=2, ensure_ascii=False) + "\n")
-            (vdir / "diff.patch").write_text(diff)
             meta["patch_sha256"] = hashlib.sha256(json.dumps(patch, sort_keys=True).encode()).hexdigest()
+        if harness.parent is not None:
+            (vdir / "diff.patch").write_text(diff)
+        if record is not None:
+            (vdir / "improver_record.json").write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str) + "\n")
         (vdir / "version.json").write_text(json.dumps(meta, indent=2) + "\n")
         self._git_commit(vdir, harness)
         return vdir
