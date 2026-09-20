@@ -96,7 +96,8 @@ def node_maximize(nodes: list[dict]) -> bool:
     return True
 
 
-def delivery_check(run_dir: Path, expected_variant: str | None, notes_first_line: str | None) -> dict:
+def delivery_check(run_dir: Path, expected_variant: str | None, notes_first_line: str | None,
+                   expected_seed_code: str | None = None) -> dict:
     """Did the harness actually reach the run?  A silently undelivered harness
     would make H_t and H_{t+1} identical while the loop believes otherwise."""
     cfg = read_run_config(run_dir)
@@ -111,6 +112,13 @@ def delivery_check(run_dir: Path, expected_variant: str | None, notes_first_line
             problems.append("agent/additional_notes.txt missing; cannot confirm notes delivery")
         elif notes_first_line not in staged.read_text(errors="ignore"):
             problems.append("rendered harness notes not found in staged additional_notes.txt")
+    if expected_seed_code:
+        nodes = read_journal(run_dir)
+        first = nodes[0].get("code", "") if nodes else ""
+        if first.strip() != expected_seed_code.strip():
+            problems.append("first node's code is not the pinned first-draft seed")
+        if "rsi_" not in cfg.get("seed_code", "none"):
+            problems.append(f"run_config seed_code={cfg.get('seed_code', 'none')!r} is not a staged rsi seed")
     return {"ok": not problems, "problems": problems, "prompt_variant": got_variant}
 
 

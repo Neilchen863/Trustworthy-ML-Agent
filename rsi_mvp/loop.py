@@ -136,7 +136,8 @@ class RsiProject:
 
     # ----------------------------------------------------------------- collect
     def collect_round(self, task_name: str, mode: str, round_: int, run_dir: str | Path,
-                      version: str | None = None, force: bool = False, replay: bool = False) -> dict:
+                      version: str | None = None, force: bool = False, replay: bool = False,
+                      replicate: int = 1) -> dict:
         """`replay=True` is for offline demos over ARCHIVED runs that were not produced by
         `version`: delivery cannot be confirmed, so it is recorded as a replay explicitly."""
         task = self.task(task_name)
@@ -151,8 +152,10 @@ class RsiProject:
         notes = self.render_notes(task_name, mode, version)
         first_line = next((l for l in notes.splitlines() if l.strip()), None)
         from .runner import notes_variant
+        seed = task.pinned_first_draft()
         traj, bank = collect(run_dir, task, mode, round_, version, reveal_grade=True,
-                             expected_variant=notes_variant(notes), notes_first_line=first_line)
+                             expected_variant=notes_variant(notes), notes_first_line=first_line,
+                             expected_seed_code=seed[0] if seed else None)
 
         mem = self.memory(task_name, mode)
         records = mem.records_from_run(traj, bank, round_)
@@ -167,7 +170,7 @@ class RsiProject:
             traj.delivery = {"ok": True, "replayed_archived_run": True, "problems": []}
         record = {
             "run_id": run_dir.name, "task": task_name, "role": task.role, "mode": mode, "round": round_,
-            "harness_version": version, "task_performance": traj.grade, "trajectory": traj.summary(),
+            "replicate": replicate, "harness_version": version, "task_performance": traj.grade, "trajectory": traj.summary(),
             "reward_vector": bank["reward_vector"], "verifier_results": bank["results"],
             "unmapped_detectors": bank["unmapped_detectors"], "delivery": traj.delivery,
             "collected_at": _now(),
@@ -296,3 +299,29 @@ class RsiProject:
         report["exposure_ledger_clean"] = True   # verify_heldout_clean raised otherwise
         _write_json(self.heldout_root / f"report_{harness_task}_{mode}.json", report)
         return report
+
+    # ---------------------------------------------------------------- summary
+    def summarize(self, task_name: str, mode: str) -> list[dict]:
+        """Per (round, harness version): replicate count, official score mean/sd/min/max and the mean
+        node-level mirage rate (lower bound), for a human reading the training runs.  Train tasks only:
+        this prints official grades, which a held-out task must never do before its report."""
+        task = self.task(task_name)
+        assert_train(task.role, "summarize official grades of a task")
+        rows = []
+        for rdir in sorted(self.rounds_root.glob(f"round_*/{task_name}/{mode}")):
+            recs = [json.loads(p.read_text()) for p in sorted(rdir.glob("*/run_record.json"))]
+            if not recs:
+                continue
+            scores = [r["task_performance"]["score"] for r in recs
+                      if r.get("task_performance") and r["task_performance"].get("score") is not None]
+            rates = [v["rate"] for r in recs for v in r["verifier_results"]
+                     if v["verifier"] == "validation_mirage" and v.get("rate") is not None]
+            rows.append({
+                "round": recs[0]["round"], "harness_version": recs[0]["harness_version"], "n_runs": len(recs),
+                "replicates": sorted(r.get("replicate", 1) for r in recs),
+                "score_mean": statistics.mean(scores) if scores else None,
+                "score_sd": statistics.stdev(scores) if len(scores) > 1 else None,
+                "score_min": min(scores) if scores else None, "score_max": max(scores) if scores else None,
+                "mirage_rate_mean": statistics.mean(rates) if rates else None,
+                "delivery_ok": all(r["delivery"].get("ok") for r in recs)})
+        return rows

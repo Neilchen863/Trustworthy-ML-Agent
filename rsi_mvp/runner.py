@@ -75,11 +75,8 @@ def build_env(task: TaskPackage, mode: str, harness: Harness, variant: str | Non
         env["AIDE_EXTRA_KWARGS"] = f"agent.search.num_drafts={rc['num_drafts']}"
     if variant:
         env["PROMPT_VARIANT"] = variant
-    pin = task.task.get("pinned_first_draft")
-    if pin and aide_root is not None:
-        env["AIDE_SEED_CODE"] = str(Path(aide_root) / pin["code"])
-        if pin.get("plan"):
-            env["AIDE_SEED_PLAN"] = str(Path(aide_root) / pin["plan"])
+    # AIDE_SEED_CODE / AIDE_SEED_PLAN are added by SgeBackend once the seed files are staged on the
+    # runner's host (their paths are only known there).
     env["RSI_REPLICATE"] = str(replicate)   # label only; the runner ignores it
     return env
 
@@ -97,13 +94,20 @@ class RunPlan:
     variant: str | None
     notes_text: str
     notes_sha256: str
+    seed_code_text: str | None = None
+    seed_plan_text: str | None = None
     command: list[str] = field(default_factory=lambda: ["bash", "sge/submit.sh"])
+
+    @property
+    def seed_sha256(self) -> str | None:
+        return hashlib.sha256(self.seed_code_text.encode()).hexdigest() if self.seed_code_text else None
 
     def describe(self) -> dict:
         return {
             "task": self.task, "competition_id": self.competition_id, "mode": self.mode,
             "harness": f"{self.harness_task}/{self.mode}/{self.harness_version}", "round": self.round,
             "replicate": self.replicate, "variant": self.variant, "notes_sha256": self.notes_sha256,
+            "seed_sha256": self.seed_sha256,
             "command": self.command + [self.competition_id], "env": self.env,
         }
 
@@ -111,11 +115,13 @@ class RunPlan:
 def make_plan(task: TaskPackage, mode: str, harness: Harness, notes_text: str, round_: int,
               replicate: int, aide_root: Path | None = None) -> RunPlan:
     variant = notes_variant(notes_text)
+    seed = task.pinned_first_draft()
     return RunPlan(
         task=task.name, competition_id=task.competition_id, mode=mode, harness_task=harness.task,
         harness_version=harness.version, round=round_, replicate=replicate,
         env=build_env(task, mode, harness, variant, replicate, aide_root), variant=variant,
-        notes_text=notes_text, notes_sha256=hashlib.sha256(notes_text.encode()).hexdigest())
+        notes_text=notes_text, notes_sha256=hashlib.sha256(notes_text.encode()).hexdigest(),
+        seed_code_text=seed[0] if seed else None, seed_plan_text=(seed[1] if seed else None) or None)
 
 
 class DryRunBackend:
@@ -148,19 +154,42 @@ class SgeBackend:
             path.write_text(plan.notes_text)
         return path
 
+    def stage_seed(self, plan: RunPlan) -> dict[str, str]:
+        """Write the pinned first draft to <root>/config/seeds/rsi_<hash>.{code.py,plan.txt} (content-addressed,
+        immutable) and return the AIDE_SEED_* variables that point at it."""
+        if not plan.seed_code_text:
+            return {}
+        seeds = self.root / "config" / "seeds"
+        seeds.mkdir(parents=True, exist_ok=True)
+        stem = f"rsi_{plan.seed_sha256[:10]}"
+        env = {}
+        for suffix, text, var in ((".code.py", plan.seed_code_text, "AIDE_SEED_CODE"),
+                                  (".plan.txt", plan.seed_plan_text, "AIDE_SEED_PLAN")):
+            if not text:
+                continue
+            path = seeds / (stem + suffix)
+            if path.exists() and path.read_text() != text:
+                raise RunnerError(f"{path} exists with different content; seed files are immutable")
+            path.write_text(text)
+            env[var] = str(path)
+        return env
+
     def submit(self, plan: RunPlan) -> dict:
         self.preflight()
         notes_path = self.stage_notes(plan)
+        seed_env = self.stage_seed(plan)
         proc = subprocess.run(plan.command + [plan.competition_id], cwd=self.root,
-                              env={**os.environ, **plan.env}, capture_output=True, text=True)
+                              env={**os.environ, **plan.env, **seed_env}, capture_output=True, text=True)
         out = proc.stdout + proc.stderr
         if proc.returncode != 0:
             raise RunnerError(f"submit.sh failed ({proc.returncode}): {out[-400:]}")
         m = re.search(r"[Yy]our job (\d+)", out)
         if not m:
             raise RunnerError(f"could not find a job id in submit.sh output: {out[-400:]}")
+        described = plan.describe()
+        described["env"] = {**described["env"], **seed_env}
         return {"dry_run": False, "job_id": m.group(1), "notes_path": str(notes_path) if notes_path else None,
-                **plan.describe()}
+                **described}
 
     def find_run_dir(self, competition_id: str, job_id: str) -> Path | None:
         matches = sorted((self.root / "runs" / competition_id).glob(f"*_j{job_id}"))

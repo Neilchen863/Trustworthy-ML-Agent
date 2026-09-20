@@ -16,9 +16,13 @@ paths:
   instruction: instruction.md
   env: env/
   data: data/
-# Optional pinned first draft (uses AIDE's existing seed-node mechanism) to reduce
-# the "first-draft framework lottery" between matched runs.  null = organic draft.
-pinned_first_draft: null
-# replicate ids for matched-seed comparisons.  AIDE/LLM calls are not bit-for-bit
-# deterministic; a replicate id only labels a run so H0/H1/H2 can be paired.
-replicates: [1]
+# Pinned first draft (AIDE's existing seed-node mechanism): every run starts from this neutral,
+# leak-free baseline, which removes the "first-draft framework lottery" (the model family of the first
+# draft decides the search volume and the outcome).  null = organic draft.  Paths are relative to this
+# directory; the runner stages the files on CRC under a content-addressed name.
+pinned_first_draft:
+  code: seeds/first_draft.py
+  plan: seeds/first_draft.plan.txt
+# Replicates run per (mode, harness version) in every round.  AIDE/LLM calls are not bit-for-bit
+# deterministic, so replicates are what separates a harness effect from search noise.
+replicates: [1, 2, 3]

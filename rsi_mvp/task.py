@@ -94,6 +94,21 @@ class TaskPackage:
     def min_severity(self) -> str:
         return self.verifier.get("min_severity", "warn")
 
+    # ---- replicates and the pinned first draft
+    @property
+    def replicates(self) -> list[int]:
+        return list(self.task.get("replicates", [1]))
+
+    def pinned_first_draft(self) -> tuple[str, str] | None:
+        """(code, plan) of the seed planted as every run's first draft, or None for an organic draft.
+        Pinning the first draft's model family removes the largest known source of run-to-run variance."""
+        pin = self.task.get("pinned_first_draft")
+        if not pin:
+            return None
+        code = self.resolve(pin["code"]).read_text()
+        plan = self.resolve(pin["plan"]).read_text().strip() if pin.get("plan") else ""
+        return code, plan
+
     def resolve(self, relative: str) -> Path:
         return (self.root / relative).resolve()
 
@@ -117,6 +132,17 @@ def _validate(pkg: TaskPackage) -> None:
     for key in ("run_secs", "steps"):
         if not isinstance(pkg.budget.get(key), int) or pkg.budget[key] <= 0:
             raise TaskError(f"task.budget.{key} must be a positive int")
+    reps = pkg.task.get("replicates", [1])
+    if (not isinstance(reps, list) or not reps or len(set(reps)) != len(reps)
+            or not all(isinstance(r, int) and not isinstance(r, bool) and r > 0 for r in reps)):
+        raise TaskError("task.replicates must be a non-empty list of distinct positive ints")
+    pin = pkg.task.get("pinned_first_draft")
+    if pin:
+        if not isinstance(pin, dict) or "code" not in pin:
+            raise TaskError("task.pinned_first_draft needs a 'code' path (and optionally 'plan')")
+        for key in ("code", "plan"):
+            if pin.get(key) and not pkg.resolve(pin[key]).is_file():
+                raise TaskError(f"task.pinned_first_draft.{key} not found: {pkg.resolve(pin[key])}")
     aide_modes = pkg.aide.get("modes")
     if not isinstance(aide_modes, dict) or not aide_modes:
         raise TaskError("aide_config.yaml needs a non-empty 'modes' mapping")

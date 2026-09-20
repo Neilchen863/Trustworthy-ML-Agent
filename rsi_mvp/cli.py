@@ -117,10 +117,22 @@ def cmd_drive(args) -> None:
     p = _project(args)
     driver = Driver(p, SgeBackend(args.aide_root), _llm(args), args.task, args.modes, args.last_round,
                     Path(args.aide_root) if args.aide_root else None, args.poll_secs,
-                    log=lambda m: print(m, flush=True))
+                    log=lambda m: print(m, flush=True), replicates=args.replicates)
     outcome = driver.run()
     print(f"driver finished: {outcome}", flush=True)
     sys.exit(0 if outcome == "done" else 3)
+
+
+def cmd_summarize(args) -> None:
+    p = _project(args)
+    for mode in (p.task(args.task).modes if args.mode == "all" else (args.mode,)):
+        print(f"== {args.task}/{mode}")
+        for row in p.summarize(args.task, mode):
+            f = lambda v: "n/a" if v is None else f"{v:.4f}"
+            print(f"  round {row['round']}  {row['harness_version']}  runs={row['n_runs']} reps={row['replicates']}  "
+                  f"score mean={f(row['score_mean'])} sd={f(row['score_sd'])} "
+                  f"[{f(row['score_min'])}..{f(row['score_max'])}]  mirage rate (lower bound) mean="
+                  f"{f(row['mirage_rate_mean'])}  delivery_ok={row['delivery_ok']}")
 
 
 def cmd_replay_demo(args) -> None:
@@ -202,8 +214,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--modes", nargs="+", default=["rule", "agent"], choices=["rule", "agent"])
     sp.add_argument("--last-round", type=int, default=2, help="final round index; improves happen before it")
     sp.add_argument("--poll-secs", type=int, default=300)
+    sp.add_argument("--replicates", type=int, nargs="+", default=None,
+                    help="replicate ids per (mode, round); default = task.yaml `replicates`")
     sp.add_argument("--llm", choices=["mock", "openai"], default="openai")
     sp.add_argument("--meta-model", default="gpt-4o-2024-08-06")
+
+    sp = add("summarize", cmd_summarize, help="per-round score mean/sd and mirage rate over replicates (train tasks)")
+    sp.add_argument("--task", required=True); sp.add_argument("--mode", default="all", choices=["all", "rule", "agent"])
 
     sp = add("replay-demo", cmd_replay_demo, help="offline H0->H1->H2 over archived runs (mock LLM)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])

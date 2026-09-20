@@ -18,7 +18,7 @@ paths:
   data: data/
 # Optional pinned first draft (uses AIDE's existing seed-node mechanism) to reduce
 # the "first-draft framework lottery" between matched runs.  null = organic draft.
-pinned_first_draft: null
+pinned_first_draft: null       # needs its own neutral seed before matched held-out runs
 # replicate ids for matched-seed comparisons.  AIDE/LLM calls are not bit-for-bit
 # deterministic; a replicate id only labels a run so H0/H1/H2 can be paired.
 replicates: [1]

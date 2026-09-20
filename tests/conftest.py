@@ -39,7 +39,8 @@ DEFAULT_NODES = [
 def make_run(base: Path, name: str = "run_a", mode: str = "agent", nodes=None, final: str = "d",
              grade: float | None = 0.65, constant_submission: bool = False, variant: str | None = None,
              notes: str | None = None, agent_log: list[str] | None = None,
-             competition: str = "random-acts-of-pizza", legacy_parent_field: bool = False) -> Path:
+             competition: str = "random-acts-of-pizza", legacy_parent_field: bool = False,
+             seed_code: str | None = None) -> Path:
     """Default journal layout = what real AIDE writes: node["parent"] empty, tree in node2parent.
     legacy_parent_field=True sets node["parent"] directly instead."""
     nodes = nodes or DEFAULT_NODES
@@ -50,12 +51,14 @@ def make_run(base: Path, name: str = "run_a", mode: str = "agent", nodes=None, f
     (run / "agent").mkdir()
     (run / "run_config.txt").write_text(
         f"competition      = {competition}\nrun_id           = {name}\nselection_mode   = {mode}\n"
-        f"prompt_variant   = {variant or 'none'}\n")
+        f"prompt_variant   = {variant or 'none'}\n"
+        f"seed_code        = {'/cfg/seeds/rsi_abcdef0123.code.py' if seed_code else 'none'}\n")
     journal, node2parent = [], {}
     for ch, step, parent, val, analysis in nodes:
         buggy = val is None
         journal.append({
-            "code": "import pandas as pd\nprint('fit')", "plan": f"plan {ch}", "step": str(step), "id": nid(ch),
+            "code": seed_code if (seed_code and not journal) else "import pandas as pd\nprint('fit')",
+            "plan": f"plan {ch}", "step": str(step), "id": nid(ch),
             "parent": nid(parent) if (parent and legacy_parent_field) else None, "children": [],
             "_term_out": ["Traceback (most recent call last):\nKeyError: 'x'\n"] if buggy
             else [f"Validation AUC: {val}\n"],
@@ -101,8 +104,24 @@ def runs(tmp_path):
 
 
 @pytest.fixture
-def tasks_dir():
+def pinned_tasks_dir():
+    """The real packages: ROAP pins its first draft and runs 3 replicates."""
     return ROOT / "tasks"
+
+
+@pytest.fixture
+def tasks_dir(tmp_path_factory):
+    """A copy of the real packages with ROAP unpinned and single-replicate, so the many tests that build
+    synthetic runs need not carry a seed.  Pinning and replication have their own tests."""
+    import shutil
+    import yaml
+    d = tmp_path_factory.mktemp("tasks") / "tasks"
+    shutil.copytree(ROOT / "tasks", d)
+    y = d / "random_acts_of_pizza" / "task.yaml"
+    cfg = yaml.safe_load(y.read_text())
+    cfg["pinned_first_draft"], cfg["replicates"] = None, [1]
+    y.write_text(yaml.safe_dump(cfg, sort_keys=False))
+    return d
 
 
 @pytest.fixture

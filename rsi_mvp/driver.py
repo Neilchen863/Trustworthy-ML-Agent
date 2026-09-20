@@ -36,20 +36,26 @@ def _now() -> str:
 class Driver:
     def __init__(self, project: RsiProject, backend, llm, task: str, modes: list[str], last_round: int,
                  aide_root: Path | None = None, poll_secs: int = 300, stale_polls: int = 3,
-                 sleep=time.sleep, log=print):
+                 sleep=time.sleep, log=print, replicates: list[int] | None = None):
         self.p, self.backend, self.llm = project, backend, llm
+        self.replicates = list(replicates or project.task(task).replicates)
         self.task, self.modes, self.last = task, list(modes), last_round
         self.aide_root, self.poll, self.stale_polls = aide_root, poll_secs, stale_polls
         self.sleep, self.log = sleep, log
         self.competition = project.task(task).competition_id
-        self._stale: dict[str, int] = {}
+        self._stale: dict[tuple, int] = {}
 
     # ------------------------------------------------------------------ state
     def _rdir(self, mode: str, r: int) -> Path:
         return self.p._round_dir(r, self.task, mode)
 
+    def _collected_replicates(self, mode: str, r: int) -> set[int]:
+        return {json.loads(p.read_text()).get("replicate", 1)
+                for p in self._rdir(mode, r).glob("*/run_record.json")}
+
     def _collected(self, mode: str, r: int) -> bool:
-        return any(self._rdir(mode, r).glob("*/run_record.json"))
+        """Every replicate of this (mode, round) has been collected."""
+        return set(self.replicates) <= self._collected_replicates(mode, r)
 
     def _improved(self, mode: str, r: int) -> bool:
         path = self._rdir(mode, r) / "meta_improver.json"
@@ -63,53 +69,69 @@ class Driver:
                 return r
         return None
 
-    def _entry(self, mode: str, r: int) -> dict | None:
-        rows = [x for x in self.p.index() if x["task"] == self.task and x["mode"] == mode and x["round"] == r]
+    def _entry(self, mode: str, r: int, replicate: int) -> dict | None:
+        rows = [x for x in self.p.index() if x["task"] == self.task and x["mode"] == mode
+                and x["round"] == r and x.get("replicate", 1) == replicate]
         return rows[-1] if rows else None
 
     # --------------------------------------------------------------- one step
     def advance(self, mode: str) -> str:
-        """Returns 'done' | 'waiting' | 'progress'.  Raises DriverHalt."""
+        """Returns 'done' | 'waiting' | 'progress'.  Raises DriverHalt.
+
+        One round of one mode = K replicate runs of the SAME harness version, submitted together; the
+        meta-improver runs once, over all K of them."""
         r = self.current_round(mode)
         if r is None:
             return "done"
         store = self.p.store(self.task, mode)
-        entry = self._entry(mode, r)
 
-        if entry is None:                                            # nothing submitted for this round
+        missing = [k for k in self.replicates if self._entry(mode, r, k) is None]
+        if missing:                                                  # submit every replicate not yet submitted
             if store.latest() != f"H{r}":
                 raise DriverHalt(f"{mode} round {r} expects harness H{r} but latest on disk is {store.latest()}")
-            plan = self.p.plan_run(self.task, mode, r, 1, None, None, self.aide_root)
-            res = self.p.submit(plan, self.backend)
-            self.log(f"[{_now()}] {mode} r{r}: submitted job {res['job_id']} with H{r} variant={plan.variant}")
+            for k in missing:
+                plan = self.p.plan_run(self.task, mode, r, k, None, None, self.aide_root)
+                res = self.p.submit(plan, self.backend)
+                self.log(f"[{_now()}] {mode} r{r} rep{k}: submitted job {res['job_id']} with H{r} "
+                         f"variant={plan.variant} seed={plan.seed_sha256 and plan.seed_sha256[:10]}")
             return "progress"
 
-        version = entry["harness"].rsplit("/", 1)[-1]
-        if not self._collected(mode, r):
+        done_reps = self._collected_replicates(mode, r)
+        progressed = waiting = False
+        for k in self.replicates:
+            if k in done_reps:
+                continue
+            entry = self._entry(mode, r, k)
+            version = entry["harness"].rsplit("/", 1)[-1]
             state = self.backend.job_state(self.competition, entry["job_id"])
             if state == "graded":
                 run_dir = self.backend.find_run_dir(self.competition, entry["job_id"])
-                rec = self.p.collect_round(self.task, mode, r, run_dir, version)
-                self.log(f"[{_now()}] {mode} r{r}: collected {rec['run_id']} score="
+                rec = self.p.collect_round(self.task, mode, r, run_dir, version, replicate=k)
+                self.log(f"[{_now()}] {mode} r{r} rep{k}: collected {rec['run_id']} score="
                          f"{rec['task_performance'] and rec['task_performance']['score']} "
                          f"reward_vector={rec['reward_vector']} delivery_ok={rec['delivery']['ok']}")
-                self._stale.pop(mode, None)
+                self._stale.pop((mode, k), None)
                 if not rec["delivery"]["ok"]:
                     # Checked here, not only via improve(): the last round has no improve step, and a
                     # run that never received its harness must not be counted as an H_r result.
-                    raise DriverHalt(f"{mode} r{r}: harness delivery could not be confirmed for "
+                    raise DriverHalt(f"{mode} r{r} rep{k}: harness delivery could not be confirmed for "
                                      f"{rec['run_id']}: {rec['delivery']['problems']}")
-                return "progress"
-            if state == "running" or state.startswith("unknown (qstat"):
-                self._stale.pop(mode, None)
-                return "waiting"
-            self._stale[mode] = self._stale.get(mode, 0) + 1          # left the queue, no grade yet
-            if self._stale[mode] >= self.stale_polls:
-                raise DriverHalt(f"{mode} r{r}: job {entry['job_id']} is {state!r}: it left the queue without "
-                                 "an official grade (crashed or was killed)")
+                progressed = True
+            elif state == "running" or state.startswith("unknown (qstat"):
+                self._stale.pop((mode, k), None)
+                waiting = True
+            else:                                                    # left the queue, no grade yet
+                self._stale[(mode, k)] = self._stale.get((mode, k), 0) + 1
+                if self._stale[(mode, k)] >= self.stale_polls:
+                    raise DriverHalt(f"{mode} r{r} rep{k}: job {entry['job_id']} is {state!r}: it left the "
+                                     "queue without an official grade (crashed or was killed)")
+                waiting = True
+        if progressed:
+            return "progress"
+        if waiting:
             return "waiting"
 
-        if r < self.last and not self._improved(mode, r):
+        if r < self.last and not self._improved(mode, r):            # all K replicates collected
             try:
                 res = self.p.improve(self.task, mode, r, self.llm)
             except LoopError as exc:
