@@ -75,6 +75,15 @@ python -m rsi_mvp heldout-collect --task insults_heldout --mode agent --harness-
 python -m rsi_mvp heldout-report --harness-task random_acts_of_pizza --mode agent
 ```
 
+Unattended training rounds (resumable, halts on any anomaly, no freeze / held-out):
+
+```bash
+nohup python -m rsi_mvp drive --task random_acts_of_pizza --modes rule agent --last-round 2 > rounds/driver.out 2>&1 &
+```
+
+CRC notes: host python is 3.9 without pandas (use a venv with pyyaml+pandas); `sge/submit.sh` re-reads the
+key from `config/env.sh` on the compute node, so that file must hold a valid key.
+
 ## How H_t reaches AIDE (no edits to the research repo)
 
 `runner.py` submits through the research repo's own `sge/submit.sh` using only channels it
@@ -90,8 +99,9 @@ already exposes; every variable set is in `scripts/_common.sh`'s caller-override
 
 ## Known limits (read before trusting a number)
 
-* **Not yet run live on CRC from this repo.** The submit path is tested against a stub
-  `submit.sh`; the collect/verify path was smoke-tested on archived real ROAP runs.
+* **One live pilot has been run** (ROAP, both modes, H0->H1->H2; see `docs/results_roap_h0_h1_h2.md`) - it
+  demonstrates the pipeline, not that the patches help (n=1 per cell, large confounds listed there).
+  Held-out evaluation has **not** been run.
 * Decision-policy text lives in the task notes, so in agent mode it also appears in the
   code-generation prompts. In rule mode, decisions read no prompt: only the rule config and the
   notes (code generation) can change behaviour.
