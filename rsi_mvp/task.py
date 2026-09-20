@@ -130,6 +130,14 @@ def _validate(pkg: TaskPackage) -> None:
             raise TaskError(f"verifier_config.yaml missing '{key}'")
     if pkg.min_severity not in ("warn", "fail"):
         raise TaskError("verifier_config.min_severity must be 'warn' or 'fail'")
+    for name, unit in pkg.verifier.get("units", {}).items():
+        if unit not in ("node", "run"):
+            raise TaskError(f"verifier_config.units.{name} must be 'node' or 'run', got {unit!r}")
+        if name not in pkg.enabled_verifiers:
+            raise TaskError(f"verifier_config.units names {name!r}, which is not an enabled verifier")
+    rate = pkg.verifier.get("actionable_rate", 0.01)
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not 0.0 < rate <= 1.0:
+        raise TaskError("verifier_config.actionable_rate must be a number in (0, 1]")
 
 
 def load_tasks(tasks_dir: str | Path) -> dict[str, TaskPackage]:

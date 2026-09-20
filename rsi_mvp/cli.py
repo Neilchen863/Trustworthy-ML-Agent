@@ -56,8 +56,8 @@ def cmd_init(args) -> None:
     p = _project(args)
     modes = p.task(args.task).modes if args.mode == "all" else (args.mode,)
     for mode in modes:
-        h0 = p.init_harness(args.task, mode)
-        print(f"created {args.task}/{mode}/{h0.version}")
+        h0 = p.init_harness(args.task, mode, args.memory_render)
+        print(f"created {args.task}/{mode}/{h0.version} (memory render: {h0.memory_render})")
 
 
 def cmd_submit(args) -> None:
@@ -161,6 +161,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("init", cmd_init, help="create H0 (stock harness)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", default="all", choices=["all", "rule", "agent"])
+    sp.add_argument("--memory-render", default="none", choices=["none", "lessons"],
+                    help="none (default): memory feeds only the meta-improver; lessons: also injected into the "
+                         "prompt notes (the first pilot's behaviour)")
 
     sp = add("submit", cmd_submit, help="submit one run to CRC (or --dry-run)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])

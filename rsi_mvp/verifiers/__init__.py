@@ -46,12 +46,15 @@ def run_bank(traj: Trajectory, task: TaskPackage) -> dict:
     scan = adapter.IssueScannerRun(traj.run_dir, node_step, final_step)
 
     overrides = task.verifier.get("overrides", {})
+    units = task.verifier.get("units", {})
+    actionable_rate = float(task.verifier.get("actionable_rate", 0.01))
     results = []
     for name in enabled:
         if name in NOT_IMPLEMENTED:
             results.append(make_verifier_result(name, [], 0.0, [], NOT_IMPLEMENTED[name], status="not_applicable"))
         else:
-            results.append(adapter.verify(name, scan, task.reward_map, task.min_severity, overrides))
+            results.append(adapter.verify(name, scan, task.reward_map, task.min_severity, overrides,
+                                          units, actionable_rate))
     return {
         "results": results,
         "reward_vector": {r["verifier"]: r["reward"] for r in results if r["status"] == "ok"},

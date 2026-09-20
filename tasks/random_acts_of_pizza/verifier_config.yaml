@@ -13,6 +13,14 @@ reward_map:
   clean: 0.0
 # Findings below this severity are ignored by the adapter.
 min_severity: warn
+# What one flagged item is.  "node": reward = -(flagged working nodes / working nodes), so 1 node in 445
+# and 30 in 445 differ.  Only verifiers whose detectors name their nodes can be node-level; the rest stay
+# run-level (reward = worst severity).
+units:
+  validation_mirage: node
+# A node-level signal below this fraction is noise: it is recorded but neither written to memory nor shown
+# to the meta-improver as a failure to fix.  Run-level failures are always actionable.
+actionable_rate: 0.01
 # Per-verifier overrides.  S6_nn_abandoned is an info-level candidate detector in
 # the scanner, so this verifier must look at info findings and uses a milder reward.
 overrides:

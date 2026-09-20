@@ -39,8 +39,8 @@ def test_h0_h1_h2_chain_over_three_rounds(project, runs):
     assert saved["status"] == "proposed" and saved["input"]["runs"][0]["task_performance"]["score"] == 0.5
 
 
-def test_memory_persists_and_is_rendered_into_the_next_rounds_notes(project, runs):
-    project.init_harness(ROAP, "rule")
+def test_memory_persists_and_is_rendered_into_the_next_rounds_notes_when_render_is_lessons(project, runs):
+    project.init_harness(ROAP, "rule", memory_render="lessons")
     project.collect_round(ROAP, "rule", 0, make_run(runs, nodes=PHANTOM, final="b", grade=0.5))
     assert project.render_notes(ROAP, "rule", "H0") == ""            # H0 stays the memory-free control
     res = project.improve(ROAP, "rule", 0, MockMetaLLM())
@@ -127,7 +127,7 @@ def test_training_ends_at_freeze(project, runs):
 
 
 def test_frozen_harness_uses_its_memory_snapshot_not_live_memory(project, runs):
-    project.init_harness(ROAP, "rule")
+    project.init_harness(ROAP, "rule", memory_render="lessons")
     project.collect_round(ROAP, "rule", 0, make_run(runs, nodes=PHANTOM, final="b", constant_submission=True))
     project.improve(ROAP, "rule", 0, MockMetaLLM())
     frozen = project.freeze(ROAP, "rule", "H1")
@@ -201,3 +201,42 @@ def test_replay_is_deterministic(tasks_dir, tmp_path, runs):
             proj.improve(ROAP, "rule", r, MockMetaLLM())
         outs.append([proj.store(ROAP, "rule").load(v).sha256() for v in ("H0", "H1", "H2")])
     assert outs[0] == outs[1] and len(set(outs[0])) == 3
+
+
+
+# ---------------------------------------------------- memory lessons vs meta-improver patches
+def test_by_default_memory_reaches_the_meta_improver_but_never_the_agents_prompt(project, runs):
+    """So an effect can be attributed to the patch, not to an auto-injected copy of the same advice."""
+    h0 = project.init_harness(ROAP, "agent")
+    assert h0.memory_render == "none"
+    project.collect_round(ROAP, "agent", 0, make_run(runs, mode="agent", nodes=PHANTOM, final="b", grade=0.5))
+    res = project.improve(ROAP, "agent", 0, MockMetaLLM())
+    assert res["status"] == "proposed" and res["input"]["memory"], "the meta-improver still sees memory"
+    notes = project.render_notes(ROAP, "agent", "H1")
+    assert "Lessons from earlier runs" not in notes
+    assert res["patch"]["proposed_patch"]["text"] in notes           # the advice arrives only as the patch
+    assert project.memory(ROAP, "agent").all(), "memory itself is still written"
+
+
+def test_a_harness_saved_before_render_existed_keeps_rendering_lessons():
+    from rsi_mvp.harness import Harness
+    legacy = Harness.from_dict({"task": "t", "mode": "rule", "version": "H1", "parent": "H0", "prompt_notes": "x",
+                                "decision_policy_text": "", "rule_config": {"max_stagnation": 15},
+                                "memory_policy": {"max_records": 5, "max_chars": 1500}})
+    assert legacy.memory_render == "lessons"
+    assert Harness(task="t", mode="rule", version="H0", parent=None).memory_render == "none"
+
+
+def test_the_meta_improver_cannot_switch_memory_rendering_on(project):
+    from rsi_mvp.harness import PatchError, apply_patch
+    h0 = project.init_harness(ROAP, "rule")
+    patch = {"target_component": "memory_policy", "proposed_patch": {"op": "set", "values": {"render": "lessons"}},
+             "expected_effect": "e", "evidence": ["e"]}
+    with pytest.raises(PatchError, match="not allowed"):
+        apply_patch(h0, patch, "H1")
+
+
+def test_cli_init_defaults_to_no_memory_rendering(tasks_dir, state, capsys):
+    from rsi_mvp import cli
+    cli.main(["--tasks-dir", str(tasks_dir), "--state-root", str(state), "init", "--task", ROAP, "--mode", "rule"])
+    assert "memory render: none" in capsys.readouterr().out

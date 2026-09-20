@@ -79,9 +79,10 @@ class MockMetaLLM:
         harness = data["harness"]
         vector = data["aggregate_reward_vector"]
         present = " ".join([harness.get("prompt_notes", ""), harness.get("decision_policy_text", "")])
+        actionable = {v["verifier"] for r in data["runs"] for v in r["verifier_results"]}   # already filtered
         for name, reward in sorted(vector.items(), key=lambda kv: (kv[1], kv[0])):
-            if reward >= 0:
-                break
+            if name not in actionable:
+                continue
             evidence = [e for r in data["runs"] for v in r["verifier_results"]
                         if v["verifier"] == name for e in v["evidence"][:1]] or [f"{name} reward {reward}"]
             lesson = LESSONS.get(name, "")

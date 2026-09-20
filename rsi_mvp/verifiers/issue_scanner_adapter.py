@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 from ..schemas import make_verifier_result
@@ -101,11 +102,16 @@ class IssueScannerRun:
         self.error: str | None = None
         self.findings: list[dict] = []
         try:
-            _ctx, self.findings = load_scanner().run_audit(self.run_dir)
+            scanner = load_scanner()
+            _ctx, self.findings = scanner.run_audit(self.run_dir)
             self.n_nodes = len(_ctx.get("nodes", []))
+            # The scanner counts pattern hits over every node that has code (buggy ones included), so
+            # that is the denominator of a node-level rate.
+            self.n_working = sum(1 for n in _ctx.get("nodes", []) if (n.get("code") or "").strip())
         except Exception as exc:  # a scanner crash must surface as status=error, not reward 0
             self.error = f"{type(exc).__name__}: {exc}"
             self.n_nodes = 0
+            self.n_working = 0
         self.unmapped = sorted({f["detector"] for f in self.findings
                                 if f["severity"] != "info" and _routed_to(f) is None
                                 and f["layer"] not in NOT_DECISIONS_LAYERS
@@ -122,6 +128,16 @@ class IssueScannerRun:
         return steps
 
 
+_HITS = re.compile(r"\[共 (\d+) 个节点命中此模式\]")
+
+
+def _hit_count(finding: dict) -> int:
+    """How many nodes share this finding's pattern.  The scanner keeps ONE exemplar finding per pattern
+    per run and appends '[共 N 个节点命中此模式]' to its message only when N > 1 (so no suffix means 1)."""
+    m = _HITS.search(finding.get("message", ""))
+    return int(m.group(1)) if m else 1
+
+
 def _evidence(finding: dict) -> str:
     text = f"[{finding['layer']}/{finding['detector']}/{finding['severity']}] {finding['message']}"
     if finding.get("evidence") is not None:
@@ -130,35 +146,77 @@ def _evidence(finding: dict) -> str:
 
 
 def verify(verifier: str, scan: IssueScannerRun, reward_map: dict[str, float],
-           min_severity: str = "warn", overrides: dict | None = None) -> dict:
-    """Result for one verifier from a shared scan."""
+           min_severity: str = "warn", overrides: dict | None = None,
+           units: dict | None = None, actionable_rate: float = 0.01) -> dict:
+    """Result for one verifier from a shared scan.
+
+    unit "run"  (default): reward = severity of the worst finding, as before.
+    unit "node": reward = -(nodes flagged / nodes with code), so 1/445 and 30/445 are told apart.  Only
+                 the M-layer names its nodes and reports how many share a pattern (one exemplar per pattern,
+                 count in the message); the E-layer and aggregate S-layer findings truncate their id lists, so
+                 those verifiers stay run-level.  Patterns can overlap and the union is not recoverable, so
+                 `rate` is a LOWER bound (largest single pattern) and `rate_upper` the sum, capped at 1.  A
+                 finding that names no node (an aggregate failure) still counts through its severity and can
+                 never be diluted to zero by the node fraction.
+    """
     ov = (overrides or {}).get(verifier, {})
     floor = ov.get("min_severity", min_severity)
     rmap = {**reward_map, **{k: float(v) for k, v in ov.get("reward_map", {}).items()}}
+    unit = (units or {}).get(verifier, "run")
     if scan.error:
         return make_verifier_result(verifier, [], 0.0, [scan.error],
-                                    "issue scanner crashed; no reward assigned", status="error")
+                                    "issue scanner crashed; no reward assigned", status="error",
+                                    unit=unit, rate=None, actionable=False)
     if scan.n_nodes == 0:
-        return make_verifier_result(verifier, [], 0.0, [], "run has no journal nodes", status="not_applicable")
+        return make_verifier_result(verifier, [], 0.0, [], "run has no journal nodes", status="not_applicable",
+                                    unit=unit, rate=None, actionable=False)
     route = ROUTES[verifier]
     # The scanner skips its whole submission layer when pandas is missing and says so only with an
     # info-level B_skip.  That is "could not check", not "checked and clean": never award reward 0.
     if verifier == "submission_sanity" and any(f["detector"] == "B_skip" for f in scan.findings):
         return make_verifier_result(verifier, [], 0.0, [], "scanner skipped submission checks: pandas is not "
-                                    "installed in this interpreter", status="not_applicable")
+                                    "installed in this interpreter", status="not_applicable",
+                                    unit=unit, rate=None, actionable=False)
     mine = [f for f in scan.findings if _routed_to(f) == verifier
             and _SEV_ORDER[f["severity"]] >= _SEV_ORDER[floor]]
+    n_units = scan.n_working if unit == "node" else 1
     if not mine:
         return make_verifier_result(verifier, [], rmap.get("clean", 0.0), [],
-                                    "no finding at or above the severity floor")
+                                    "no finding at or above the severity floor",
+                                    unit=unit, rate=0.0 if unit == "node" else None, n_flagged=0,
+                                    n_units=n_units, actionable=False, severity_reward=rmap.get("clean", 0.0))
     worst = max(mine, key=lambda f: _SEV_ORDER[f["severity"]])["severity"]
-    reward = rmap.get(worst, rmap.get("fail", -1.0))
+    sev_reward = rmap.get(worst, rmap.get("fail", -1.0))
     evidence = [_evidence(f) for f in mine]
     evidence += [_evidence(f) for f in scan.findings if f["detector"] in route.get("context", ())]
     detectors = sorted({f["detector"] for f in mine})
+    steps = scan.steps_for(mine)
+
+    if unit == "node" and scan.n_working > 0:
+        attributed = [f for f in mine if f.get("node")]
+        unattributed = [f for f in mine if not f.get("node")]
+        hits = [_hit_count(f) for f in attributed]
+        n_flagged = min(max(hits, default=0), scan.n_working)                 # lower bound of the union
+        rate = n_flagged / scan.n_working
+        rate_upper = min(1.0, sum(hits) / scan.n_working)                       # patterns may overlap
+        reward = -rate if attributed else 0.0
+        unattributed_rewards = [rmap.get(f["severity"], sev_reward) for f in unattributed]
+        if unattributed_rewards:               # aggregate failure: keep its severity, never dilute it
+            reward = min(reward, min(unattributed_rewards))
+        actionable = rate >= actionable_rate or any(x < 0 for x in unattributed_rewards)
+        explanation = (f"{n_flagged}/{scan.n_working} nodes flagged by the largest pattern ({rate:.1%}; at most "
+                       f"{rate_upper:.1%} if the {len(attributed)} pattern(s) do not overlap) from "
+                       f"{', '.join(detectors)}"
+                       + (f"; plus {len(unattributed)} aggregate finding(s) with no node" if unattributed else "")
+                       + ". " + mine[0]["message"])[:600]
+        return make_verifier_result(verifier, steps, reward, evidence, explanation, unit="node", rate=rate,
+                                    rate_upper=rate_upper, n_flagged=n_flagged, n_units=scan.n_working,
+                                    actionable=bool(actionable), severity_reward=sev_reward)
+
     explanation = (f"{len(mine)} finding(s) from {', '.join(detectors)}; worst severity {worst}. "
                    + mine[0]["message"])[:600]
-    return make_verifier_result(verifier, scan.steps_for(mine), reward, evidence, explanation)
+    return make_verifier_result(verifier, steps, sev_reward, evidence, explanation, unit="run", rate=None,
+                                n_flagged=1, n_units=1, actionable=sev_reward < 0, severity_reward=sev_reward)
 
 
 IMPLEMENTED = tuple(ROUTES)

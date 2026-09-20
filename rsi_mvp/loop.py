@@ -22,7 +22,7 @@ from pathlib import Path
 from . import meta_improver
 from .collect import collect
 from .guards import ExposureLedger, assert_train, verify_heldout_clean
-from .harness import Harness, HarnessStore, PatchError
+from .harness import DEFAULT_MEMORY_POLICY, Harness, HarnessStore, PatchError
 from .memory import MemoryStore
 from .runner import DryRunBackend, RunPlan, SgeBackend, make_plan
 from .schemas import make_event
@@ -68,13 +68,17 @@ class RsiProject:
         return self.rounds_root / f"round_{round_:02d}" / task / mode
 
     # -------------------------------------------------------------------- init
-    def init_harness(self, task_name: str, mode: str) -> Harness:
-        """Create H0 = the stock AIDE harness for this task/mode (empty notes)."""
+    def init_harness(self, task_name: str, mode: str, memory_render: str = "none") -> Harness:
+        """Create H0 = the stock AIDE harness for this task/mode (empty notes).
+
+        `memory_render="none"` (default) keeps memory out of the agent's prompt: it only feeds the
+        meta-improver.  "lessons" reproduces the first pilot, where lessons were also injected."""
         task = self.task(task_name)
         assert_train(task.role, "create a trainable harness")
         settings = task.mode_settings(mode)
         h0 = Harness(task=task_name, mode=mode, version="H0", parent=None,
-                     rule_config=settings.get("initial_rule_config") if mode == "rule" else None)
+                     rule_config=settings.get("initial_rule_config") if mode == "rule" else None,
+                     memory_policy={**DEFAULT_MEMORY_POLICY, "render": memory_render})
         self.store(task_name, mode).create_initial(h0)
         return h0
 
@@ -85,7 +89,7 @@ class RsiProject:
         store = self.store(harness_task, mode)
         harness = store.load(version)
         frozen = self.frozen(harness_task, mode)
-        if version == "H0":
+        if version == "H0" or harness.memory_render == "none":
             lessons = ""
         elif frozen and frozen["version"] == version:
             lessons = frozen["memory_lessons"]
@@ -233,7 +237,8 @@ class RsiProject:
             raise LoopError(f"unknown harness version {version!r}")
         harness = store.load(version)
         mp = harness.memory_policy
-        lessons = self.memory(task_name, mode).render_lessons(mp["max_records"], mp["max_chars"]) if version != "H0" else ""
+        lessons = (self.memory(task_name, mode).render_lessons(mp["max_records"], mp["max_chars"])
+                   if version != "H0" and harness.memory_render == "lessons" else "")
         info = {"task": task_name, "mode": mode, "version": version, "harness_sha256": harness.sha256(),
                 "memory_lessons": lessons, "memory_sha256": hashlib.sha256(lessons.encode()).hexdigest(),
                 "frozen_at": _now()}

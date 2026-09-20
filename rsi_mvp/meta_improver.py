@@ -12,6 +12,7 @@ import hashlib
 import json
 
 from .guards import assert_train
+from .schemas import is_actionable
 from .harness import (MAX_APPEND_CHARS, MAX_RULE_KEYS_PER_PATCH, MEMORY_BOUNDS, RULE_BOUNDS, Harness,
                       PatchError, validate_patch)
 from .llm import LLM, LLMError
@@ -40,7 +41,7 @@ def build_input(harness: Harness, runs: list[dict], memory: list[dict]) -> dict:
             "reward_vector": r["reward_vector"],
             "verifier_results": [
                 {**v, "evidence": v["evidence"][:MAX_EVIDENCE_PER_VERIFIER]}
-                for v in r["verifier_results"] if v["status"] == "ok" and v["reward"] < 0],
+                for v in r["verifier_results"] if is_actionable(v)],
             "delivery_ok": r["delivery"].get("ok", False),
         } for r in runs],
         "aggregate_reward_vector": {k: sum(v) / len(v) for k, v in sorted(agg.items())},
@@ -61,6 +62,10 @@ def system_prompt(mode: str) -> str:
         "harness, verifier rewards with evidence (negative reward = a detected failure mode), task performance and "
         "memory. Propose ONE small patch to ONE component that you expect to fix the most important detected failure "
         "mode. Do not rewrite the agent, the task or the evaluator; you cannot.\n\n"
+        "Rewards: a node-level verifier reports reward = -(fraction of working nodes it flagged) together with "
+        "`rate`, `n_flagged`, `n_units`; a run-level verifier reports -1/-0.5/0 by severity. Only verifiers with "
+        "`actionable` true are listed as failures; a small rate that is not listed is noise - do not patch for it. "
+        "If nothing is listed, reply no_change.\n\n"
         "Components you may patch (target_component):\n"
         f"- prompt: {{\"op\":\"append\"|\"replace\",\"text\":\"...\"}}; append at most {MAX_APPEND_CHARS} characters of "
         "generic guidance; replace must stay similar to the current text.\n"

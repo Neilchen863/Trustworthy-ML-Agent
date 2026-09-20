@@ -112,3 +112,17 @@ def state(tmp_path):
     root.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
     return root
+
+
+M2_CODE = ("from sklearn.preprocessing import StandardScaler\nfrom sklearn.model_selection import train_test_split\n"
+           "scaler = StandardScaler()\nXs = scaler.fit_transform(data_all)\ntr, va = train_test_split(Xs)\n")
+
+
+def set_node_code(run: Path, chars, code: str = M2_CODE) -> None:
+    """Give the nodes whose id char is in `chars` code that the scanner's M2 (fit-before-split) flags."""
+    path = run / "logs" / "journal.json"
+    j = json.loads(path.read_text())
+    for n in j["nodes"]:
+        if n["id"][0] in chars:
+            n["code"] = code
+    path.write_text(json.dumps(j))

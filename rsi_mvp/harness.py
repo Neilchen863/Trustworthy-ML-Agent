@@ -8,7 +8,8 @@ H_t is *only* data that the existing AIDE runner already knows how to consume:
   decision_policy  agent mode: extra decision-policy text (rendered under its own
                    heading in the same notes).
                    rule mode : a WHITELISTED rule configuration (bounded numbers).
-  memory_policy    how many / how long the memory lessons rendered into the notes.
+  memory_policy    how many / how long the memory lessons are, and whether they are rendered into the
+                   notes at all (`render`: none | lessons; see DEFAULT_MEMORY_POLICY).
 
 Nothing else is reachable: no AIDE source, no task environment, no evaluator.
 A patch is validated, bounded and stored with its exact diff; an invalid patch
@@ -36,7 +37,14 @@ RULE_BOUNDS = {
     "num_drafts": (1, 10, int),
 }
 MEMORY_BOUNDS = {"max_records": (0, 10, int), "max_chars": (0, 3000, int)}
-DEFAULT_MEMORY_POLICY = {"max_records": 5, "max_chars": 1500}
+# `render` decides whether memory lessons are ALSO written into the agent's prompt notes:
+#   "none"    (default for new harnesses) memory feeds only the meta-improver; the agent sees advice only
+#             through patches, so an effect can be attributed to the patch and not to the auto-injected lesson
+#   "lessons" memory lessons are appended to the notes automatically (what the first pilot did; a harness
+#             saved without this key keeps that meaning, so already-committed versions are unchanged)
+# `render` is fixed by the experiment arm and is NOT patchable by the meta-improver (not in MEMORY_BOUNDS).
+DEFAULT_MEMORY_POLICY = {"max_records": 5, "max_chars": 1500, "render": "none"}
+MEMORY_RENDER_MODES = ("none", "lessons")
 
 TARGETS = ("prompt", "decision_policy", "memory_policy")
 MAX_APPEND_CHARS = 800
@@ -67,11 +75,18 @@ class Harness:
             raise PatchError(f"unknown mode {self.mode!r}")
         if self.memory_policy is None:
             self.memory_policy = dict(DEFAULT_MEMORY_POLICY)
+        if self.memory_render not in MEMORY_RENDER_MODES:
+            raise PatchError(f"memory_policy.render must be one of {MEMORY_RENDER_MODES}")
         if self.mode == "rule":
             self.rule_config = validate_rule_values(self.rule_config or {}, partial=True)
             self.decision_policy_text = ""
         else:
             self.rule_config = None
+
+    @property
+    def memory_render(self) -> str:
+        # a harness stored before this key existed rendered lessons, so a missing key means "lessons"
+        return (self.memory_policy or {}).get("render", "lessons")
 
     # ---- serialisation
     def to_dict(self) -> dict:

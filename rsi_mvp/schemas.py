@@ -86,7 +86,16 @@ def make_verifier_result(
     evidence: Iterable[str],
     explanation: str,
     status: str = "ok",
+    **rate_fields: Any,
 ) -> dict:
+    """Spec section 7 result.  Optional `rate_fields` (all or none of them are meaningful together):
+      unit            "node" | "run"   what one flagged item is
+      rate            LOWER bound on the fraction of `n_units` flagged (node unit only, else None)
+      rate_upper      upper bound (patterns may overlap, the scanner cannot give the union)
+      n_flagged / n_units
+      actionable      True when the signal is worth a harness change (memory + meta-improver read this)
+      severity_reward what the old worst-severity reward would have been (kept for comparison)
+    """
     res = {
         "verifier": verifier,
         "decision_steps": sorted({int(s) for s in decision_steps}),
@@ -95,6 +104,7 @@ def make_verifier_result(
         "explanation": explanation,
         "status": status,
     }
+    res.update(rate_fields)
     return validate_verifier_result(res)
 
 
@@ -109,7 +119,24 @@ def validate_verifier_result(res: dict) -> dict:
     _require(isinstance(res["evidence"], list), "evidence must be a list")
     _require(isinstance(res["explanation"], str), "explanation must be str")
     _require(res.get("status", "ok") in VERIFIER_STATUSES, "bad verifier status")
+    if res.get("unit") is not None:
+        _require(res["unit"] in ("node", "run"), "verifier unit must be 'node' or 'run'")
+    if res.get("rate") is not None:
+        _require(isinstance(res["rate"], (int, float)) and 0.0 <= res["rate"] <= 1.0, "rate must be in [0, 1]")
+    if res.get("rate_upper") is not None:
+        _require(isinstance(res["rate_upper"], (int, float)) and 0.0 <= res["rate_upper"] <= 1.0
+                 and res["rate_upper"] + 1e-12 >= (res.get("rate") or 0.0), "rate_upper must be in [rate, 1]")
+    if res.get("actionable") is not None:
+        _require(isinstance(res["actionable"], bool), "actionable must be a bool")
     return res
+
+
+def is_actionable(res: dict) -> bool:
+    """A result worth acting on.  Results written before rates existed have no flag: any negative
+    reward was actionable then."""
+    if res.get("status", "ok") != "ok":
+        return False
+    return bool(res["actionable"]) if res.get("actionable") is not None else res["reward"] < 0
 
 
 # --------------------------------------------------------------------- memory

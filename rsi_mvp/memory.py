@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .schemas import make_memory_record, validate_memory_record
+from .schemas import is_actionable, make_memory_record, validate_memory_record
 from .trajectory import Trajectory
 
 LESSONS = {
@@ -72,15 +72,17 @@ class MemoryStore:
                 "harness_version": traj.harness_version, "run_id": traj.run_dir.name}
         recs = []
         for res in bank["results"]:
-            if res["status"] != "ok" or res["reward"] >= 0:
+            if not is_actionable(res):                 # sub-threshold rates are noise, not lessons
                 continue
+            detail = (res["evidence"][0] if res["evidence"] else res["explanation"])
+            if res.get("rate") is not None:
+                detail = f"{res['n_flagged']}/{res['n_units']} nodes (>= {res['rate']:.1%}): " + detail
             recs.append(make_memory_record(
-                situation, outcome, res["verifier"], res["reward"],
-                (res["evidence"][0] if res["evidence"] else res["explanation"])[:400],
+                situation, outcome, res["verifier"], res["reward"], detail[:400],
                 LESSONS.get(res["verifier"], res["explanation"][:200]), **prov))
         if not recs:
             recs.append(make_memory_record(situation, outcome, "none", 0.0,
-                                           "all enabled verifiers returned reward >= 0", CLEAN_LESSON, **prov))
+                                           "no verifier reported an actionable failure", CLEAN_LESSON, **prov))
         return recs
 
     # ------------------------------------------------------------------- read
