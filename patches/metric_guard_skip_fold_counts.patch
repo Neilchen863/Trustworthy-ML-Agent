@@ -1,0 +1,61 @@
+diff --git a/scripts/_metric_parser_runtime.py b/scripts/_metric_parser_runtime.py
+index 4590759..b429c2b 100644
+--- a/scripts/_metric_parser_runtime.py
++++ b/scripts/_metric_parser_runtime.py
+@@ -63,13 +63,24 @@ def _last_number(line: str, skip: set[str] | None = None) -> float | None:
+     return values[-1] if values else None
+ 
+ 
++# A count of folds/splits ("5-fold", "5 folds", "cv=5", "n_splits=5") is not the metric.  Without this,
++# "Mean AUC over 5-fold CV: 0.6323" was read as 5.0 (the first number after the last metric name).
++_FOLD_COUNT = re.compile(
++    r"(?i)\d+\s*[- ]?\s*(?:folds?|splits?)\b|\b(?:n_splits|folds?|splits?|cv|k)\s*=\s*\d+"
++)
++
++
+ def _number_after_metric(line: str) -> float | None:
+     matches = list(_METRIC_NAME.finditer(line))
+     if not matches:
+         return None
+     tail = line[matches[-1].end() :]
+-    match = _NUM_RE.search(tail)
+-    return _float(match.group(1)) if match else None
++    fold_counts = [m.span() for m in _FOLD_COUNT.finditer(tail)]
++    for match in _NUM_RE.finditer(tail):
++        if any(start <= match.start(1) < end for start, end in fold_counts):
++            continue
++        return _float(match.group(1))
++    return None
+ 
+ 
+ def parse_metric_evidence(raw: str) -> dict[str, Any]:
+diff --git a/tests/test_metric_runtime_patches.py b/tests/test_metric_runtime_patches.py
+index 595ca3e..05b872f 100644
+--- a/tests/test_metric_runtime_patches.py
++++ b/tests/test_metric_runtime_patches.py
+@@ -213,3 +213,25 @@ def test_runtime_guard_rejects_numeric_review_without_stdout_evidence(monkeypatc
+     assert node.metric.value is None
+     assert node.is_buggy is True
+     assert "rejected_unsupported_reviewer_value=217.13" in node.analysis
++
++
++def test_cv_summary_does_not_read_the_fold_count_as_the_metric():
++    """Regression: "Mean AUC score (5-fold CV): 0.62" used to parse as 5.0, and the guard then overrode
++    the reviewer's correct 0.62 with it (agent-mode runs of 2026-09-19 recorded val=5.0 nodes)."""
++    parser = _load_metric_parser()
++    cases = {
++        "Mean AUC over 5-fold CV: 0.6323": 0.6323,
++        "Mean AUC score (5-fold CV): 0.6222062365826799": 0.6222062365826799,
++        "Cross-validation AUC (mean, 5 folds): 0.6323": 0.6323,
++        "Average ROC AUC across 5 folds: 0.6323": 0.6323,
++        "The mean AUC score from 5-fold cross-validation is 0.6065": 0.6065,
++        "Mean CV AUC (10-fold): 0.71 +/- 0.02": 0.71,
++        "Mean AUC (cv=5): 0.6323": 0.6323,
++        "5-fold CV mean AUC: 0.6323": 0.6323,
++        "Mean CV AUC: 0.6323": 0.6323,
++        "Mean AUC over 5-fold CV: 1": 1.0,
++    }
++    for line, expected in cases.items():
++        got = parser.parse_metric_evidence(line)["aggregate"]
++        assert got is not None and abs(got - expected) < 1e-12, (line, got)
++    assert parser.parse_metric_evidence("Mean AUC over 5-fold CV")["aggregate"] is None
