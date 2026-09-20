@@ -1,0 +1,30 @@
+# Verifiers enabled for this task (global bank: rsi_mvp/verifiers).
+enabled:
+  - validation_argmax_anchoring
+  - submission_sanity
+  - validation_mirage
+  - extraction_distortion
+  - simplified_error_attribution
+  - fallback_to_runnable
+# Severity -> reward.  Raw per-verifier rewards are kept as a vector (spec 8).
+reward_map:
+  fail: -1.0
+  warn: -0.5
+  clean: 0.0
+# Findings below this severity are ignored by the adapter.
+min_severity: warn
+# What one flagged item is.  "node": reward = -(flagged working nodes / working nodes), so 1 node in 445
+# and 30 in 445 differ.  Only verifiers whose detectors name their nodes can be node-level; the rest stay
+# run-level (reward = worst severity).
+units:
+  validation_mirage: node
+# A node-level signal below this fraction is noise: it is recorded but neither written to memory nor shown
+# to the meta-improver as a failure to fix.  Run-level failures are always actionable.
+actionable_rate: 0.01
+# Per-verifier overrides.  S6_nn_abandoned is an info-level candidate detector in
+# the scanner, so this verifier must look at info findings and uses a milder reward.
+overrides:
+  fallback_to_runnable:
+    min_severity: info
+    reward_map:
+      info: -0.25
