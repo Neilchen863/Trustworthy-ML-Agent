@@ -1,0 +1,24 @@
+--- H0/harness/decision_policy.md
++++ H1/harness/decision_policy.md
+@@ -0,0 +1,5 @@
++### Decision Policy for Model Improvement
++
++- Prioritize diagnosing and fixing errors in complex models, such as neural networks, rather than defaulting to simpler models when errors occur.
++- Ensure preprocessing steps are correctly applied within the training fold to prevent data leakage.
++- Be vigilant about validation scores that appear too good to be true, as they may indicate underlying issues with data handling.--- H0/harness/memory_policy.json
++++ H1/harness/memory_policy.json
+@@ -1,5 +1,5 @@
+ {
+   "max_chars": 1500,
+   "max_records": 5,
+-  "render": "none"
++  "render": "lessons"
+ }
+--- H0/harness/prompt_notes.md
++++ H1/harness/prompt_notes.md
+@@ -0,0 +1,5 @@
++### Important Considerations for Model Development
++
++1. **Preprocessing and Data Leakage**: Ensure that all preprocessing and resampling steps are performed within the training fold only. Avoid using any fields or data that will not be available at prediction time. Be cautious of validation scores that seem unusually high, as they may indicate data leakage.
++
++2. **Error Diagnosis and Model Selection**: Do not abandon promising approaches, such as neural networks, simply because they encounter errors. Instead, focus on diagnosing and fixing these errors before considering a fallback to simpler models. This approach will help in leveraging the full potential of complex models.

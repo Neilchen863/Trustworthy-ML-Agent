@@ -1,0 +1,162 @@
+{
+  "run_id": "20260920_135930_gpt4o_2h_nohint_j1460465",
+  "task": "random_acts_of_pizza",
+  "role": "train",
+  "mode": "agent",
+  "round": 0,
+  "replicate": 1,
+  "harness_version": "H0",
+  "task_performance": {
+    "score": 0.5,
+    "any_medal": false,
+    "above_median": false,
+    "valid_submission": true,
+    "is_lower_better": false,
+    "submission_exists": true,
+    "gold_threshold": 0.97908,
+    "median_threshold": 0.5995950000000001
+  },
+  "trajectory": {
+    "run_dir": "/users/jchen53/mlebench-aide/runs/random-acts-of-pizza/20260920_135930_gpt4o_2h_nohint_j1460465",
+    "task": "random_acts_of_pizza",
+    "mode": "agent",
+    "round": 0,
+    "harness_version": "H0",
+    "n_nodes": 25,
+    "n_good_nodes": 15,
+    "n_buggy_nodes": 10,
+    "final_node_id": "c82ac75b26a746b180ad8922e913027f",
+    "task_performance": {
+      "score": 0.5,
+      "any_medal": false,
+      "above_median": false,
+      "valid_submission": true,
+      "is_lower_better": false,
+      "submission_exists": true,
+      "gold_threshold": 0.97908,
+      "median_threshold": 0.5995950000000001
+    },
+    "delivery": {
+      "ok": true,
+      "problems": [],
+      "prompt_variant": "none"
+    }
+  },
+  "reward_vector": {
+    "validation_argmax_anchoring": -1.0,
+    "submission_sanity": -1.0,
+    "validation_mirage": -0.64,
+    "extraction_distortion": 0.0,
+    "simplified_error_attribution": 0.0,
+    "fallback_to_runnable": 0.0
+  },
+  "verifier_results": [
+    {
+      "verifier": "validation_argmax_anchoring",
+      "decision_steps": [
+        20
+      ],
+      "reward": -1.0,
+      "evidence": [
+        "[S/S1_submitted_phantom/fail] 最终提交节点 c82ac75b 在 phantom 谱系上",
+        "[S/S7_val_beats_gold/fail] 5 个节点 val 好于金牌线 0.97908 而最终 test (0.5) 没有，且提交节点即其中之一 — 任务自适应 phantom 信号 | {\"examples\": [[7, 1.0], [8, 0.999517], [10, 1.0], [16, 1.0], [20, 1.0]]}",
+        "[S/S1_phantom_nodes/warn] 5 个节点 val≥0.999 (phantom 候选), 后代共 13 个 (52% 的搜索预算投在污染谱系) — max(metric) 下 honest 解将永远无法胜出 (recover run 111-phantom 模式) | {\"ids\": [\"4d4e77a4\", \"e9b49f4c\", \"30d75542\", \"c9dbc7aa\", \"c82ac75b\"]}",
+        "[S/S2_submit_val_rank/info] 提交节点 val=1, 在 15 个有效节点中排第 1 (val-argmax 锚定检查)"
+      ],
+      "explanation": "3 finding(s) from S1_phantom_nodes, S1_submitted_phantom, S7_val_beats_gold; worst severity fail. 最终提交节点 c82ac75b 在 phantom 谱系上",
+      "status": "ok",
+      "unit": "run",
+      "rate": null,
+      "n_flagged": 1,
+      "n_units": 1,
+      "actionable": true,
+      "severity_reward": -1.0
+    },
+    {
+      "verifier": "submission_sanity",
+      "decision_steps": [
+        20
+      ],
+      "reward": -1.0,
+      "evidence": [
+        "[B/B1_constant_pred/fail] 列 requester_received_pizza 预测为常数 (nunique=1) — RAOP 泄漏塌缩模式 | {\"nunique\": 1, \"std\": 0.0, \"min\": 0.09872863, \"max\": 0.09872863, \"nan\": 0, \"inf\": 0}"
+      ],
+      "explanation": "1 finding(s) from B1_constant_pred; worst severity fail. 列 requester_received_pizza 预测为常数 (nunique=1) — RAOP 泄漏塌缩模式",
+      "status": "ok",
+      "unit": "run",
+      "rate": null,
+      "n_flagged": 1,
+      "n_units": 1,
+      "actionable": true,
+      "severity_reward": -1.0
+    },
+    {
+      "verifier": "validation_mirage",
+      "decision_steps": [
+        20
+      ],
+      "reward": -0.64,
+      "evidence": [
+        "[M/M7_leaky_field/fail] step 7: 引用官方泄漏字段 `requester_user_flair` [共 16 个节点命中此模式]"
+      ],
+      "explanation": "16/25 nodes flagged by the largest pattern (64.0%; at most 64.0% if the 1 pattern(s) do not overlap) from M7_leaky_field. step 7: 引用官方泄漏字段 `requester_user_flair` [共 16 个节点命中此模式]",
+      "status": "ok",
+      "unit": "node",
+      "rate": 0.64,
+      "rate_upper": 0.64,
+      "n_flagged": 16,
+      "n_units": 25,
+      "actionable": true,
+      "severity_reward": -1.0
+    },
+    {
+      "verifier": "extraction_distortion",
+      "decision_steps": [],
+      "reward": 0.0,
+      "evidence": [],
+      "explanation": "no finding at or above the severity floor",
+      "status": "ok",
+      "unit": "run",
+      "rate": null,
+      "n_flagged": 0,
+      "n_units": 1,
+      "actionable": false,
+      "severity_reward": 0.0
+    },
+    {
+      "verifier": "simplified_error_attribution",
+      "decision_steps": [],
+      "reward": 0.0,
+      "evidence": [],
+      "explanation": "no finding at or above the severity floor",
+      "status": "ok",
+      "unit": "run",
+      "rate": null,
+      "n_flagged": 0,
+      "n_units": 1,
+      "actionable": false,
+      "severity_reward": 0.0
+    },
+    {
+      "verifier": "fallback_to_runnable",
+      "decision_steps": [],
+      "reward": 0.0,
+      "evidence": [],
+      "explanation": "no finding at or above the severity floor",
+      "status": "ok",
+      "unit": "run",
+      "rate": null,
+      "n_flagged": 0,
+      "n_units": 1,
+      "actionable": false,
+      "severity_reward": 0.0
+    }
+  ],
+  "unmapped_detectors": [],
+  "delivery": {
+    "ok": true,
+    "problems": [],
+    "prompt_variant": "none"
+  },
+  "collected_at": "2026-09-20T18:55:20+00:00"
+}

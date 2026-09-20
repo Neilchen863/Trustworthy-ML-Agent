@@ -1,0 +1,14 @@
+{
+  "decision_policy_text": "",
+  "memory_policy": {
+    "max_chars": 1500,
+    "max_records": 5,
+    "render": "none"
+  },
+  "mode": "agent",
+  "parent": null,
+  "prompt_notes": "",
+  "rule_config": null,
+  "task": "random_acts_of_pizza",
+  "version": "H0"
+}
