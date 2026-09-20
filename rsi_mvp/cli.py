@@ -50,7 +50,7 @@ def _improver(args):
         return PatchImprover(_llm(args))
     if args.llm == "mock":
         return MockImprover()
-    return AgentImprover(OpenAIChat(model=args.meta_model), max_steps=args.max_steps)
+    return AgentImprover(OpenAIChat(model=args.meta_model, max_cost_usd=args.max_cost), max_steps=args.max_steps)
 
 
 def _run_dir(project: RsiProject, args, task_name: str) -> Path:
@@ -108,7 +108,7 @@ def cmd_collect(args) -> None:
 def cmd_improve(args) -> None:
     res = _project(args).improve(args.task, args.mode, args.round, _improver(args))
     print(json.dumps({k: res[k] for k in ("status", "reason", "improver", "summary", "changed_files", "warnings",
-                                          "new_version", "provider", "model")}, indent=2))
+                                          "new_version", "provider", "model", "usage")}, indent=2))
 
 
 def cmd_freeze(args) -> None:
@@ -223,6 +223,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="agent (default): edits the harness files directly in an independent workspace; "
                          "patch: legacy single bounded JSON patch applied by the program")
     sp.add_argument("--max-steps", type=int, default=30, help="tool-call turns the agent improver may use")
+    sp.add_argument("--max-cost", type=float, default=None,
+                    help="USD list-price cap on the agent improver's model calls (it stops before exceeding it)")
 
     sp = add("freeze", cmd_freeze, help="freeze H_final (+ memory snapshot)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", required=True, choices=["rule", "agent"])
@@ -244,6 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="agent (default): edits the harness files directly in an independent workspace; "
                          "patch: legacy single bounded JSON patch applied by the program")
     sp.add_argument("--max-steps", type=int, default=30, help="tool-call turns the agent improver may use")
+    sp.add_argument("--max-cost", type=float, default=None,
+                    help="USD list-price cap on the agent improver's model calls (it stops before exceeding it)")
 
     sp = add("summarize", cmd_summarize, help="per-round score mean/sd and mirage rate over replicates (train tasks)")
     sp.add_argument("--task", required=True); sp.add_argument("--mode", default="all", choices=["all", "rule", "agent"])

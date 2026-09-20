@@ -286,7 +286,17 @@ class AgentImprover:
         self.llm, self.max_steps, self.max_nudges = llm, max_steps, max_nudges
         self.provider, self.model = llm.provider, llm.model
 
+    def usage(self) -> dict:
+        llm = self.llm
+        return {"calls": getattr(llm, "calls", None), "tokens_in": getattr(llm, "tokens_in", None),
+                "tokens_out": getattr(llm, "tokens_out", None), "cost_usd": getattr(llm, "cost_usd", None)}
+
     def improve(self, ws: Workspace, ctx: ImproveContext) -> dict:
+        out = self._improve(ws, ctx)
+        out["usage"] = self.usage()
+        return out
+
+    def _improve(self, ws: Workspace, ctx: ImproveContext) -> dict:
         tools = WorkspaceTools(ws, ctx)
         messages = [
             {"role": "system", "content": contract_text(ctx.mode)},

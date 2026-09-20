@@ -263,7 +263,7 @@ class RsiProject:
         if status == "proposed":
             record = {"improver": improver.name, "provider": improver.provider, "model": improver.model,
                       "summary": out.get("summary"), "steps": out.get("steps"), "scope": report.to_dict(),
-                      "transcript": out.get("transcript")}
+                      "usage": out.get("usage"), "transcript": out.get("transcript")}
             try:
                 new_version = store.commit_files(harness, files, record, patch=out.get("patch"),
                                                   rendered=report.rendered_sample).version
@@ -272,7 +272,8 @@ class RsiProject:
         result = {
             "status": status, "reason": reason, "improver": improver.name, "provider": improver.provider,
             "model": improver.model, "mode": mode, "from_version": harness.version, "new_version": new_version,
-            "summary": out.get("summary"), "changed_files": report.changed, "warnings": report.warnings,
+            "summary": out.get("summary"), "usage": out.get("usage"), "changed_files": report.changed,
+            "warnings": report.warnings,
             "violations": report.violations, "steps": out.get("steps"), "patch": out.get("patch"),
             "input_sha256": out.get("input_sha256") or hashlib.sha256(
                 (contract_text(mode) + json.dumps(payload, sort_keys=True, default=str)).encode()).hexdigest(),

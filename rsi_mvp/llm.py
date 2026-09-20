@@ -31,16 +31,30 @@ class LLMError(RuntimeError):
     pass
 
 
+PRICES_PER_M = {"gpt-4o": (2.5, 10.0), "gpt-4o-mini": (0.15, 0.6)}      # USD per 1M tokens (in, out), list price
+
+
 class OpenAIChat:
     provider = "openai"
 
     def __init__(self, model: str = "gpt-4o-2024-08-06", api_key_env: str = "OPENAI_API_KEY",
                  base_url: str = "https://api.openai.com/v1", temperature: float = 0.0,
-                 retries: int = 3, timeout: int = 180):
+                 retries: int = 3, timeout: int = 180, max_cost_usd: float | None = None):
         self.model, self.api_key_env, self.base_url = model, api_key_env, base_url.rstrip("/")
         self.temperature, self.retries, self.timeout = temperature, retries, timeout
+        self.max_cost_usd = max_cost_usd
+        self.tokens_in = self.tokens_out = self.calls = 0
+
+    @property
+    def cost_usd(self) -> float:
+        """List-price cost of everything this object has sent so far (unknown model: priced as expensive)."""
+        best = max((n for n in PRICES_PER_M if self.model.startswith(n)), key=len, default=None)
+        pin, pout = PRICES_PER_M[best] if best else (15.0, 60.0)
+        return self.tokens_in * pin / 1e6 + self.tokens_out * pout / 1e6
 
     def _post(self, body: dict) -> dict:
+        if self.max_cost_usd is not None and self.cost_usd >= self.max_cost_usd:
+            raise LLMError(f"cost cap reached: ${self.cost_usd:.3f} >= ${self.max_cost_usd:.2f}; not sending another call")
         key = os.environ.get(self.api_key_env, "").strip()
         if not key:
             raise LLMError(f"{self.api_key_env} is not set (on CRC: source the run.env that holds the key)")
@@ -52,7 +66,12 @@ class OpenAIChat:
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    return json.loads(resp.read().decode())
+                    data = json.loads(resp.read().decode())
+                usage = data.get("usage") or {}
+                self.calls += 1
+                self.tokens_in += int(usage.get("prompt_tokens", 0))
+                self.tokens_out += int(usage.get("completion_tokens", 0))
+                return data
             except urllib.error.HTTPError as exc:
                 last = f"HTTP {exc.code}: {exc.read().decode(errors='ignore')[:200]}"
                 if exc.code not in (429, 500, 502, 503, 504):
