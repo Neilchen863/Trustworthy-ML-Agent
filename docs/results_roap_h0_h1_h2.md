@@ -1,3 +1,11 @@
+> **2026-09-20 - read this first.** Every `agent` row/claim below is **not** an agent-mode result. In every
+> agent-mode run of the pilot and of v2 the decision-LLM call failed before it was sent
+> (`[agent search] failed ('tuple' object has no attribute 'strip') -> falling back to rule-based policy`; 0 successful
+> `LLM chose` lines), so those runs executed the stock rule policy. Cause: the default branch of
+> `_inject_agent_decision.py::_ordered_selection_prompt` passes `[(title, text), ...]` tuples to the prompt compiler.
+> It is not fixed. The `rule` rows are unaffected. v2 was started and then stopped (see the end of this file).
+> Full picture: `docs/real_rsi_progress_20260920.md`.
+
 # ROAP H0 -> H1 -> H2 pilot (2026-09-19, CRC) - what it does and does not show
 
 Task `random_acts_of_pizza` (train), gpt-4o-2024-08-06 for code/feedback/meta-improver, 4h / 500 steps per
@@ -114,3 +122,12 @@ to no verifier, so "could not check" reads as `extraction_distortion = 0`.
 
 Starting the next experiment needs a fresh state root, because `rsi init` refuses to overwrite H0:
 `rsi --state-root experiments/v2 init --task random_acts_of_pizza`.
+
+## v2 outcome (2026-09-20): stopped, no usable comparison
+
+v2 (rule and agent x 3 replicates x H0->H1->H2, pinned first draft, per-node rate reward, dedicated patched overlay)
+was launched at 05:24 UTC with 6 jobs. Only two finished before the project owner stopped everything (about 07:50 UTC):
+rule 1459602 (official 0.6687, mirage rate 1.4%) and agent 1459606 (official 0.6406; invalid, see the banner). Four jobs
+were deleted while running. Verified while it ran: the dedicated overlay was mounted by all six jobs, the pinned seed
+gave a bit-identical first node (0.636461) in the five runs that could be read, and no node had val > 1.0 (the
+val = 5.0 artifact of the metric guard was gone). Spend: v2 $148.88, pilot $252.63, total about $401.6 at list price.

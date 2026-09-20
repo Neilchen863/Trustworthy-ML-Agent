@@ -1,5 +1,9 @@
 # real-rsi-mvp
 
+> **Status 2026-09-20:** agent-mode results so far are invalid (the decision LLM never ran; see `docs/results_roap_h0_h1_h2.md`).
+> The rule arm and the pipeline itself are sound. No job is running on CRC.
+
+
 Minimal RSI loop around the **existing** AIDE rule-based and agent-based modes on
 MLE-bench tasks (implements *Real RSI engineering spec v0.3*, `docs/`).
 

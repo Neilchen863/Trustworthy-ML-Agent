@@ -5,3 +5,5 @@ __pycache__/
 # secrets / local config
 .env
 run.env
+# bulky CRC artifacts (overlay, staged files, job stdout); never committed
+artifacts/
