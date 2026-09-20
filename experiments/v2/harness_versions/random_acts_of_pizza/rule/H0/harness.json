@@ -1,0 +1,19 @@
+{
+  "decision_policy_text": "",
+  "memory_policy": {
+    "max_chars": 1500,
+    "max_records": 5,
+    "render": "none"
+  },
+  "mode": "rule",
+  "parent": null,
+  "prompt_notes": "",
+  "rule_config": {
+    "debug_prob": 1.0,
+    "max_debug_depth": 20,
+    "max_stagnation": 15,
+    "num_drafts": 5
+  },
+  "task": "random_acts_of_pizza",
+  "version": "H0"
+}
