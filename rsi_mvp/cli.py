@@ -33,6 +33,10 @@ def _project(args) -> RsiProject:
     return RsiProject(args.tasks_dir, args.state_root)
 
 
+def _backend(args) -> SgeBackend:
+    return SgeBackend(args.aide_root, args.overlay_path)
+
+
 def _llm(args):
     if args.llm == "mock":
         return MockMetaLLM()
@@ -64,7 +68,7 @@ def cmd_submit(args) -> None:
     p = _project(args)
     plan = p.plan_run(args.task, args.mode, args.round, args.replicate, args.harness_task, args.harness,
                       Path(args.aide_root) if args.aide_root else None)
-    backend = DryRunBackend() if args.dry_run else SgeBackend(args.aide_root)
+    backend = DryRunBackend() if args.dry_run else _backend(args)
     print(json.dumps(p.submit(plan, backend), indent=2))
 
 
@@ -115,7 +119,7 @@ def cmd_drive(args) -> None:
     """Unattended training rounds (no freeze, no held-out).  Resumable; halts on anything unexpected."""
     from .driver import Driver
     p = _project(args)
-    driver = Driver(p, SgeBackend(args.aide_root), _llm(args), args.task, args.modes, args.last_round,
+    driver = Driver(p, _backend(args), _llm(args), args.task, args.modes, args.last_round,
                     Path(args.aide_root) if args.aide_root else None, args.poll_secs,
                     log=lambda m: print(m, flush=True), replicates=args.replicates)
     outcome = driver.run()
@@ -164,6 +168,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--state-root", default=str(REPO), help="where harness_versions/, rounds/, heldout/ live")
     ap.add_argument("--aide-root", default=os.environ.get("MLEBENCH_AIDE_ROOT"),
                     help="research repo checkout on CRC (default: $MLEBENCH_AIDE_ROOT)")
+    ap.add_argument("--overlay-path", default=os.environ.get("RSI_OVERLAY_PATH"),
+                    help="dedicated agent-fix overlay for this experiment's runs (default: $RSI_OVERLAY_PATH; "
+                         "unset = the research repo's shared overlay)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def add(name, fn, **kw):

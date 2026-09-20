@@ -28,9 +28,15 @@ def build_input(harness: Harness, runs: list[dict], memory: list[dict]) -> dict:
     for run in runs:
         assert_train(run["role"], f"pass run {run['run_id']} of task {run['task']} to the meta-improver")
     agg: dict[str, list[float]] = {}
+    bounds: dict[str, dict[str, list[float]]] = {}
     for run in runs:
         for name, reward in run["reward_vector"].items():
             agg.setdefault(name, []).append(reward)
+        for v in run["verifier_results"]:
+            if v.get("rate") is not None and v.get("rate_upper") is not None:
+                b = bounds.setdefault(v["verifier"], {"lower": [], "upper": []})
+                b["lower"].append(v["rate"])
+                b["upper"].append(v["rate_upper"])
     return {
         "harness": harness.to_dict(),
         "runs": [{
@@ -45,6 +51,11 @@ def build_input(harness: Harness, runs: list[dict], memory: list[dict]) -> dict:
             "delivery_ok": r["delivery"].get("ok", False),
         } for r in runs],
         "aggregate_reward_vector": {k: sum(v) / len(v) for k, v in sorted(agg.items())},
+        # node-level verifiers: the fraction of nodes flagged is an INTERVAL [lower, upper] (patterns can overlap
+        # and the scanner cannot give their union); it is reported as such, never collapsed to a midpoint
+        "node_rate_intervals": {k: {"lower_mean": sum(b["lower"]) / len(b["lower"]),
+                                    "upper_mean": sum(b["upper"]) / len(b["upper"]), "n_runs": len(b["lower"])}
+                                for k, b in sorted(bounds.items())},
         "memory": [{k: m[k] for k in ("verifier", "reward", "lesson", "situation")} for m in memory],
     }
 
@@ -63,7 +74,8 @@ def system_prompt(mode: str) -> str:
         "memory. Propose ONE small patch to ONE component that you expect to fix the most important detected failure "
         "mode. Do not rewrite the agent, the task or the evaluator; you cannot.\n\n"
         "Rewards: a node-level verifier reports reward = -(fraction of working nodes it flagged) together with "
-        "`rate`, `n_flagged`, `n_units`; a run-level verifier reports -1/-0.5/0 by severity. Only verifiers with "
+        "`rate` (a LOWER bound on the fraction of nodes flagged), `rate_upper` (an upper bound; the truth lies between the "
+        "two and you must not assume the midpoint), `n_flagged`, `n_units`; a run-level verifier reports -1/-0.5/0 by severity. Only verifiers with "
         "`actionable` true are listed as failures; a small rate that is not listed is noise - do not patch for it. "
         "If nothing is listed, reply no_change.\n\n"
         "Components you may patch (target_component):\n"

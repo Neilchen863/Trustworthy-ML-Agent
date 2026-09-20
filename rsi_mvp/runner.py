@@ -132,16 +132,24 @@ class DryRunBackend:
 
 
 class SgeBackend:
-    def __init__(self, aide_root: str | Path | None = None):
+    """`overlay_path` selects a dedicated agent-fix overlay for every run of this experiment (run_aide.sh honours
+    OVERLAY_PATH, which is in the caller-override whitelist).  That is how an experiment can carry a fix - e.g. the
+    metric-guard patch - without touching the overlay shared by every other experiment."""
+
+    def __init__(self, aide_root: str | Path | None = None, overlay_path: str | Path | None = None):
         root = aide_root or os.environ.get("MLEBENCH_AIDE_ROOT")
         if not root:
             raise RunnerError("set MLEBENCH_AIDE_ROOT (or --aide-root) to the research repo checkout on CRC")
         self.root = Path(root)
+        overlay = overlay_path or os.environ.get("RSI_OVERLAY_PATH")
+        self.overlay_path = Path(overlay).expanduser().resolve() if overlay else None
 
     def preflight(self) -> None:
         for rel in ("sge/submit.sh", "scripts/run_aide.sh", "scripts/_common.sh"):
             if not (self.root / rel).is_file():
                 raise RunnerError(f"{self.root} is not a MLE-bench_AIDE checkout (missing {rel})")
+        if self.overlay_path is not None and not self.overlay_path.is_file():
+            raise RunnerError(f"dedicated overlay not found: {self.overlay_path}")
 
     def stage_notes(self, plan: RunPlan) -> Path | None:
         if not plan.variant:
@@ -178,8 +186,10 @@ class SgeBackend:
         self.preflight()
         notes_path = self.stage_notes(plan)
         seed_env = self.stage_seed(plan)
+        overlay_env = {"OVERLAY_PATH": str(self.overlay_path)} if self.overlay_path else {}
         proc = subprocess.run(plan.command + [plan.competition_id], cwd=self.root,
-                              env={**os.environ, **plan.env, **seed_env}, capture_output=True, text=True)
+                              env={**os.environ, **plan.env, **seed_env, **overlay_env},
+                              capture_output=True, text=True)
         out = proc.stdout + proc.stderr
         if proc.returncode != 0:
             raise RunnerError(f"submit.sh failed ({proc.returncode}): {out[-400:]}")
@@ -187,7 +197,7 @@ class SgeBackend:
         if not m:
             raise RunnerError(f"could not find a job id in submit.sh output: {out[-400:]}")
         described = plan.describe()
-        described["env"] = {**described["env"], **seed_env}
+        described["env"] = {**described["env"], **seed_env, **overlay_env}
         return {"dry_run": False, "job_id": m.group(1), "notes_path": str(notes_path) if notes_path else None,
                 **described}
 
