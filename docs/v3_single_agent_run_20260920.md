@@ -26,3 +26,22 @@ No H1 was produced (`no_change`), so no second run was made.
 * Artifacts: run dirs `runs/random-acts-of-pizza/20260920_085624_..._j1460024` (smoke) and `..._085833_..._j1460025`;
   state `experiments/v3/`, `experiments/v3_smoke/`. The v3 overlay (1 GB) stays on CRC at `~/real-rsi-mvp/overlays/v3/`.
 * CRC repo was backed up to `~/real-rsi-mvp-backup-pre-v3.tgz` before code was synced; `experiments/v2` and `overlays/v2` untouched.
+
+## Follow-up: real improver on real failure evidence (mechanism check, ≈ $0.054)
+Run in a scratch state root outside the git repo (`experiments/v3_improver_check/`, copied from v2, so no tags of the pilot were touched),
+evidence = the v2 agent round-0 record (mirage rate [0.108, 0.174], `fallback_to_runnable` -0.25). **Those rewards are partly artifacts of the
+old guard/fallback bugs, so this checks the mechanism only, not whether the edits help.**
+
+gpt-4o (6 calls, 18k tokens in, cap $0.3): read `SUMMARY.md`, `list_files`, read `runs.json`, read the 3 harness files, **write 3 files**
+(`prompt_notes.md`, `decision_policy.md`, `memory_policy.json`), `check()` ok, `finish` -> framework committed **H1** with a file-level diff,
+`improver_record.json` and persisted `rendered_notes.txt`. So the direct-edit path (read -> write -> check -> scope/runnability -> commit) is
+verified against a real model.
+
+What the output shows, uncomfortably:
+* The model flipped `memory_policy.render` from `none` to `lessons` (allowed by design; the scope report flagged it as a confound). The rendered
+  notes then contain its own advice **twice** (once as notes/policy, once as auto-injected lessons), the same duplication that made pilot effects
+  unattributable. Whether an improver may switch memory rendering on is a policy decision that is still open.
+* Its edits are text reminders (fit preprocessing inside the fold; do not abandon neural networks after an error), like the pilot's patches: a
+  plausible response to the evidence, with no reason to expect a changed behaviour.
+* Bug found and fixed in the same session: files written without a trailing newline glued the next file header to their last line in
+  `diff.patch`, making it an invalid patch. `diff_files` now emits `\ No newline at end of file`; a test applies the diff with `patch`.

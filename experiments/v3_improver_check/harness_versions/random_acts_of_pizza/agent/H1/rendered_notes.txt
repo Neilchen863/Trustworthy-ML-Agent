@@ -1,0 +1,16 @@
+### Important Considerations for Model Development
+
+1. **Preprocessing and Data Leakage**: Ensure that all preprocessing and resampling steps are performed within the training fold only. Avoid using any fields or data that will not be available at prediction time. Be cautious of validation scores that seem unusually high, as they may indicate data leakage.
+
+2. **Error Diagnosis and Model Selection**: Do not abandon promising approaches, such as neural networks, simply because they encounter errors. Instead, focus on diagnosing and fixing these errors before considering a fallback to simpler models. This approach will help in leveraging the full potential of complex models.
+
+## Decision policy (for choosing what to try next and what to submit)
+### Decision Policy for Model Improvement
+
+- Prioritize diagnosing and fixing errors in complex models, such as neural networks, rather than defaulting to simpler models when errors occur.
+- Ensure preprocessing steps are correctly applied within the training fold to prevent data leakage.
+- Be vigilant about validation scores that appear too good to be true, as they may indicate underlying issues with data handling.
+
+## Lessons from earlier runs on similar tasks
+- Do not abandon a promising approach just because it errored; diagnose and fix the failure before falling back to a simpler model.
+- Fit every preprocessing/resampling step inside the training fold only, never use fields that do not exist at prediction time, and be suspicious of a validation score that looks too good.

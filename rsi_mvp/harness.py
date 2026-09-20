@@ -516,10 +516,13 @@ class HarnessStore:
             a, b = old.get(path), new.get(path)
             if a == b:
                 continue
-            out.extend(difflib.unified_diff(
+            chunk = list(difflib.unified_diff(
                 (a or "").splitlines(True), (b or "").splitlines(True),
                 fromfile=f"{old_version}/harness/{path}" if a is not None else "/dev/null",
                 tofile=f"{new_version}/harness/{path}" if b is not None else "/dev/null"))
+            if chunk and not chunk[-1].endswith("\n"):        # a file without trailing newline: keep the patch valid
+                chunk[-1] += "\n\\ No newline at end of file\n"
+            out.extend(chunk)
         return "".join(out)
 
     def commit_patch(self, parent: Harness, patch: dict) -> Harness:

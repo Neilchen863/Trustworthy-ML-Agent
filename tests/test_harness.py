@@ -139,3 +139,18 @@ def test_a_directory_version_round_trips_exactly(state, agent_h):
     assert store.load("H1") == h1
     assert (store.version_dir("H1") / "harness" / "prompt_notes.md").read_text() == "Line one.\nLine two."
     assert not (store.version_dir("H1") / "harness.json").exists()
+
+
+def test_file_diff_stays_a_valid_patch_when_a_file_has_no_trailing_newline():
+    """Found on a real improver run: files written without a final newline glued the next file header onto their last line."""
+    from rsi_mvp.harness import HarnessStore
+    diff = HarnessStore.diff_files({"a.md": "old\n", "b.md": ""}, {"a.md": "new line without newline", "b.md": "x\n"}, "H0", "H1")
+    assert "newline\n\\ No newline at end of file\n--- H0/harness/b.md" in diff
+    import subprocess, tempfile, pathlib
+    with tempfile.TemporaryDirectory() as d:
+        pathlib.Path(d, "a.md").write_text("old\n")
+        pathlib.Path(d, "b.md").write_text("")
+        pathlib.Path(d, "p.diff").write_text(diff.replace("H0/harness/", "a/").replace("H1/harness/", "b/"))
+        r = subprocess.run(["patch", "-p1", "-i", "p.diff"], cwd=d, capture_output=True, text=True)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert pathlib.Path(d, "a.md").read_text() == "new line without newline"
