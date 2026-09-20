@@ -34,10 +34,20 @@ by responsibility, not by file extension. AIDE, the task environment and the eva
 4. `diff.patch` (file-level) and `improver_record.json` (summary, transcript, scope report) are written next to the
    version: a post-hoc record, never an input.
 
-Hook scripts run in `rsi_mvp/hooks.py`'s sandbox (AST policy: pure text/data helpers only; fresh `python -I`
-process, cleared environment, timeout, CPU/memory limits). That is defence in depth against accidents of our own
-improver, **not** a security boundary against an adversary. The legacy bounded-JSON-patch improver is kept as
-`--improver patch` (`PatchImprover`); `MockImprover` does deterministic direct edits for offline runs.
+Hook scripts run in `rsi_mvp/hooks.py`'s sandbox: an AST policy (pure text/data helpers only; no `_private` or
+frame/generator/introspection attributes, no `hash`/`id`); the script sees **facades** of the allowed stdlib modules
+(public non-module attributes only, so `collections._sys` or `string.Formatter.get_field` cannot reach real module
+namespaces); a fresh interpreter with empty env and an empty cwd; timeout, CPU/memory limits and `RLIMIT_NOFILE=3`
+(no new file or socket can be opened even if a Python-level escape were found). This is defence in depth against
+accidents of our own improver, **not** a security boundary against an adversary (that needs a container). The legacy
+bounded-JSON-patch improver is kept as `--improver patch` (`PatchImprover`); `MockImprover` does deterministic
+direct edits for offline runs.
+
+**Reproducibility.** The check that a candidate harness "runs" uses the round and memory that version will actually
+get, renders twice (different results = rejected) and happens before the commit. The rendered notes are then
+**stored with the version** (`rendered_notes.txt`, sha256 in `version.json`); plan, collect, freeze and held-out use that
+text and never re-execute a hook. Both render paths (default and hook) share one final gate: at most 20,000 characters,
+no forbidden material.
 
 A version's notes are a function of (harness, memory written before that version existed), so the notes checked
 at collect time equal those submitted at plan time even while replicates are collected one by one. Switching
@@ -81,7 +91,7 @@ with `role: test`.
 
 ```bash
 pip install pyyaml pandas pytest          # pandas: the scanner's submission checks
-python -m pytest -q                       # 158 tests, no CRC / LLM / research repo needed
+python -m pytest -q                       # 169 tests, no CRC / LLM / research repo needed
 
 # offline plumbing check over archived runs (mock meta-improver; NOT an experiment)
 python -m rsi_mvp replay-demo --task random_acts_of_pizza --mode rule --runs RUN_A RUN_B RUN_C

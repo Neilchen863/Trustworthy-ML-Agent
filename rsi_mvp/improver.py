@@ -43,6 +43,8 @@ class ImproveContext:
     memory: list
     input: dict                      # meta_improver.build_input(...): the evidence, as shown to any improver
     history: list = field(default_factory=list)
+    next_round: int = 0              # the number of the version being produced: its notes are rendered for this round
+    visible_memory: list | None = None   # memory records that version will actually see (None: only synthetic)
 
 
 class Workspace:
@@ -262,7 +264,7 @@ class WorkspaceTools:
 
     def check(self) -> dict:
         self.last_report = validate_files(self.ws.read_files(), self.ctx.mode, self.parent_files,
-                                          self.ctx.memory or None)
+                                          self.ctx.visible_memory, self.ctx.next_round)
         r = self.last_report
         return {"ok": r.ok, "violations": r.violations, "warnings": r.warnings, "changed_files": r.changed,
                 "rendered_notes_sample": (r.rendered_sample or "")[:1500]}

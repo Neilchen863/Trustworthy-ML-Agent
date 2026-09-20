@@ -293,3 +293,121 @@ def test_the_agent_loop_reports_its_transcript(project, runs):
     res = project.improve(ROAP, "agent", 0, edit(("harness/prompt_notes.md", "Note.\n")))
     names = [c["name"] for step in res["transcript"] for c in step["calls"]]
     assert names == ["write_file", "check", "finish"] and res["steps"] == 3
+
+
+# ============================================================ review findings (2026-09-20): hook boundary, reproducibility
+# --- 1. the hook boundary
+@pytest.mark.parametrize("src", [
+    'import collections\ndef render_notes(ctx):\n    return collections._sys.modules["os"].getcwd()\n',   # reviewer's payload
+    'def render_notes(ctx):\n    g = (1 for _ in [0])\n    return str(g.gi_frame.f_back)\n',              # frame chain
+    'def render_notes(ctx):\n    return str(str.mro())\n',
+])
+def test_hook_escape_routes_are_refused_statically(src):
+    with pytest.raises(hooks.HookError, match="not allowed"):
+        hooks.run_hook(src, "render_notes", [{}])
+
+
+def test_hooks_see_facades_not_the_real_modules():
+    """string.Formatter.get_field is getattr on arbitrary strings: it would reach the real module namespace."""
+    with pytest.raises(hooks.HookError):
+        hooks.run_hook("import string\ndef render_notes(ctx):\n    return str(string.Formatter)\n", "render_notes", [{}])
+    with pytest.raises(hooks.HookError):
+        hooks.run_hook("from string import Formatter\ndef render_notes(ctx):\n    return ''\n", "render_notes", [{}])
+    ok = ("import json\nimport re\nfrom collections import Counter\n"
+          "def render_notes(ctx):\n    return json.dumps(Counter('aab').most_common(1)) + re.sub('a', 'A', 'ba')\n")
+    assert hooks.run_hook(ok, "render_notes", [{}]) == '[["a", 2]]bA'                   # useful stdlib still works
+
+
+def test_the_child_cannot_open_files_or_sockets_whatever_python_trick_is_used():
+    import subprocess
+    import sys
+    code = ("import sys; sys.path.insert(0, '.'); from rsi_mvp import hook_runner as h; h._limits(5)\n"
+            "for f in (lambda: open('/etc/passwd').read(), lambda: __import__('socket').socket()):\n"
+            "    try:\n        f(); print('OPENED')\n    except OSError:\n        print('blocked')\n")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         cwd=os.path.dirname(os.path.dirname(__file__))).stdout.split()
+    assert out == ["blocked", "blocked"]
+
+
+# --- 2. reproducibility
+def test_hash_and_id_are_unavailable_and_set_order_is_stable():
+    for name in ("hash", "id"):
+        with pytest.raises(hooks.HookError, match="not allowed"):
+            hooks.run_hook(f"def render_notes(ctx):\n    return str({name}('a'))\n", "render_notes", [{}])
+    src = 'def render_notes(ctx):\n    return ",".join(set(["alpha", "beta", "gamma", "delta", "eps", "zeta"]))\n'
+    assert len({hooks.run_hook(src, "render_notes", [{}]) for _ in range(4)}) == 1
+
+
+def test_a_versions_notes_are_rendered_once_and_never_recomputed(project, runs):
+    collect_round0(project, runs)
+    project.improve(ROAP, "agent", 0, edit(("harness/hooks/render_notes.py", RENDER_HOOK),
+                                           ("harness/prompt_notes.md", "Be careful.\n")))
+    store = project.store(ROAP, "agent")
+    stored = store.rendered("H1")
+    assert stored and project.render_notes(ROAP, "agent", "H1") == stored
+    # even if the hook file on disk changed afterwards (or behaved differently), the version's notes do not
+    (store.version_dir("H1") / "harness" / "hooks" / "render_notes.py").write_text(
+        'def render_notes(ctx):\n    return "SOMETHING ELSE"\n')
+    assert project.render_notes(ROAP, "agent", "H1") == stored
+    assert json.loads((store.version_dir("H1") / "version.json").read_text())["rendered_notes_sha256"]
+
+
+def test_a_hook_that_renders_differently_on_repeat_is_rejected(monkeypatch):
+    import rsi_mvp.harness as hm
+    calls = iter(range(100))
+    monkeypatch.setattr(hm, "run_hook", lambda *a, **k: f"text {next(calls)}")
+    files = {"prompt_notes.md": "x", "memory_policy.json": "{}",
+             "hooks/render_notes.py": "def render_notes(ctx):\n    return 'x'\n"}
+    report = validate_files(files, "agent")
+    assert not report.ok and any("reproducibly" in v for v in report.violations)
+
+
+# --- 3. the runnability check uses the candidate's real round and memory
+def test_the_check_uses_the_versions_own_round_not_round_zero():
+    div = {"prompt_notes.md": "x", "memory_policy.json": "{}",
+           "hooks/render_notes.py": 'def render_notes(ctx):\n    return str(10 // ctx["round"])\n'}
+    assert not validate_files(div, "agent", round_=0).ok             # a real division by zero in round 0
+    assert validate_files(div, "agent", round_=1).ok                 # ... which a version 1 never meets
+    only_r0 = dict(div, **{"hooks/render_notes.py": 'def render_notes(ctx):\n    return str(10 // (ctx["round"] - 1))\n'})
+    assert validate_files(only_r0, "agent", round_=0).ok             # fine at round 0 ...
+    assert not validate_files(only_r0, "agent", round_=1).ok         # ... breaks in the round it will actually run
+
+
+def test_improve_validates_before_commit_with_the_real_round(project, runs):
+    collect_round0(project, runs)
+    bad = 'def render_notes(ctx):\n    return str(10 // (ctx["round"] - 1))\n'    # H1 is used in round 1
+    # (a) the agent's own check() already runs the hook for round 1, so finish() refuses and nothing is produced
+    res = project.improve(ROAP, "agent", 0, edit(("harness/hooks/render_notes.py", bad)))
+    assert res["status"] == "rejected" and project.store(ROAP, "agent").versions() == ["H0"]
+    # (b) an improver that skips check() is stopped by the framework, before anything is committed
+    class NoCheck:
+        name, provider, model = "nocheck", "test", "t"
+
+        def improve(self, ws, ctx):
+            (ws.harness_dir / "hooks").mkdir(exist_ok=True)
+            (ws.harness_dir / "hooks" / "render_notes.py").write_text(bad)
+            return {"outcome": "edited", "summary": "s", "steps": 1, "transcript": []}
+
+    res = project.improve(ROAP, "agent", 0, NoCheck())
+    assert res["status"] == "rejected" and "does not run" in res["reason"]
+    assert project.store(ROAP, "agent").versions() == ["H0"]         # nothing was committed
+    good = 'def render_notes(ctx):\n    return "round=" + str(ctx["round"]) + " memory=" + str(len(ctx["memory"]))\n'
+    res = project.improve(ROAP, "agent", 0, edit(("harness/hooks/render_notes.py", good)))
+    assert res["status"] == "proposed"
+    h1 = project.store(ROAP, "agent").load("H1")
+    expected_memory = len(h1.select_records(project._memory_for(ROAP, "agent", h1)))
+    assert project.render_notes(ROAP, "agent", "H1") == f"round=1 memory={expected_memory}"
+
+
+# --- 4. the length limit holds on the default rendering path too
+def test_total_notes_length_is_limited_on_both_render_paths(project, runs):
+    from rsi_mvp.harness import MAX_NOTES_CHARS, Harness, PatchError
+    files = {"prompt_notes.md": "a" * 15000, "decision_policy.md": "b" * 15000}
+    report = validate_files(files, "agent")
+    assert not report.ok and any(str(MAX_NOTES_CHARS) in v for v in report.violations)
+    with pytest.raises(PatchError, match="limit"):
+        Harness.from_files(files, "t", "agent", "H1", "H0").render([], 1)
+    collect_round0(project, runs)
+    res = project.improve(ROAP, "agent", 0, edit(("harness/prompt_notes.md", "a" * 15000),
+                                                 ("harness/decision_policy.md", "b" * 15000)))
+    assert res["status"] == "rejected" and project.store(ROAP, "agent").versions() == ["H0"]

@@ -101,6 +101,9 @@ class RsiProject:
         freeze time; H0 is the memory-free control.  Memory selection and composition follow the harness (its
         memory_policy and, if present, its hook scripts)."""
         store = self.store(harness_task, mode)
+        persisted = store.rendered(version)
+        if persisted is not None:                                   # rendered once at commit; never re-executed
+            return persisted
         harness = store.load(version)
         frozen = self.frozen(harness_task, mode)
         round_ = int(version[1:])
@@ -243,7 +246,10 @@ class RsiProject:
         for r in records:
             self.ledger.record(task_name, task.competition_id, r["run_id"], round_, r["harness_version"])
         payload = meta_improver.build_input(harness, records, memory)
-        ctx = ImproveContext(harness, mode, records, memory, payload, self._history(task_name, mode, round_))
+        next_round = int(store.next_version()[1:])
+        visible = [m for m in memory if m.get("round", -1) < next_round]     # what H_{t+1} will actually see
+        ctx = ImproveContext(harness, mode, records, memory, payload, self._history(task_name, mode, round_),
+                             next_round=next_round, visible_memory=visible)
         ws = prepare_workspace(rdir / "improver_workspace", ctx)
         evidence_before = self._context_hashes(ws)
         try:
@@ -252,14 +258,15 @@ class RsiProject:
             out = {"outcome": "error", "reason": f"{type(exc).__name__}: {exc}", "steps": 0, "transcript": []}
 
         files = ws.read_files()
-        report = validate_files(files, mode, harness.to_files(), memory or None)
+        report = validate_files(files, mode, harness.to_files(), visible, next_round)
         status, reason, new_version = self._judge(out, harness, files, report, evidence_before, ws)
         if status == "proposed":
             record = {"improver": improver.name, "provider": improver.provider, "model": improver.model,
                       "summary": out.get("summary"), "steps": out.get("steps"), "scope": report.to_dict(),
                       "transcript": out.get("transcript")}
             try:
-                new_version = store.commit_files(harness, files, record, patch=out.get("patch")).version
+                new_version = store.commit_files(harness, files, record, patch=out.get("patch"),
+                                                  rendered=report.rendered_sample).version
             except (PatchError, HookError) as exc:
                 status, reason = "rejected", str(exc)
         result = {
@@ -326,7 +333,8 @@ class RsiProject:
         blob = json.dumps(records, sort_keys=True, ensure_ascii=False)
         info = {"task": task_name, "mode": mode, "version": version, "harness_sha256": harness.sha256(),
                 "memory_records": records, "memory_sha256": hashlib.sha256(blob.encode()).hexdigest(),
-                "frozen_notes_sha256": hashlib.sha256(harness.render(records, int(version[1:])).encode()).hexdigest(),
+                "frozen_notes_sha256": hashlib.sha256(
+                    self.render_notes(task_name, mode, version).encode()).hexdigest(),
                 "frozen_at": _now()}
         _write_json(self.frozen_path(task_name, mode), info)
         return info

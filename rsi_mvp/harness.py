@@ -199,22 +199,25 @@ class Harness:
 
     def render(self, memory_records=(), round_=None) -> str:
         """The exact notes text for a run.  `hooks/render_notes.py` (context organisation) replaces the default
-        composition; without it, memory lessons are appended only if `memory_policy.render == "lessons"`."""
+        composition; without it, memory lessons are appended only if `memory_policy.render == "lessons"`.  Both
+        paths end in the same gate: a string, at most MAX_NOTES_CHARS, no forbidden material."""
         from .memory import lessons_text
         source = self.hooks.get("hooks/render_notes.py")
         if source is None:
             mp = self.memory_policy or {}
             lessons = (lessons_text(list(memory_records), int(mp.get("max_chars", 1500)))
                        if self.memory_render == "lessons" else "")
-            return self.render_notes(lessons)
-        ctx = {**self._hook_context(round_), "memory": [_slim_record(r) for r in memory_records]}
-        text = run_hook(source, "render_notes", [ctx])
-        if not isinstance(text, str):
-            raise PatchError("render_notes must return a string")
+            text = self.render_notes(lessons)
+        else:
+            ctx = {**self._hook_context(round_), "memory": [_slim_record(r) for r in memory_records]}
+            text = run_hook(source, "render_notes", [ctx])
+            if not isinstance(text, str):
+                raise PatchError("render_notes must return a string")
+        text = text.strip()
         if len(text) > MAX_NOTES_CHARS:
-            raise PatchError(f"render_notes returned {len(text)} characters (limit {MAX_NOTES_CHARS})")
+            raise PatchError(f"the rendered notes are {len(text)} characters (limit {MAX_NOTES_CHARS})")
         _check_text(text)
-        return text.strip()
+        return text
 
 
 def _slim_record(rec: dict) -> dict:
@@ -357,12 +360,18 @@ _SAMPLE_RECORDS = [
 
 
 def validate_files(files: dict[str, str], mode: str, parent_files: dict[str, str] | None = None,
-                   sample_records: list[dict] | None = None) -> ScopeReport:
+                   sample_records: list[dict] | None = None, round_: int = 0) -> ScopeReport:
     """Is this file view (1) inside the harness boundary and (2) runnable?
 
     Boundary: only ALLOWED_FILES exist - nothing that names AIDE code, task data or the evaluator can be a
     file of the harness, and prompt text may not point at grader/answer material.  Runnability: JSON parses
-    and is within bounds, hook scripts pass the static policy, and the harness renders notes on sample memory.
+    and is within bounds, hook scripts pass the static policy, and the harness renders notes.
+
+    The render check uses what the version will ACTUALLY receive: `round_` (its own version number) and
+    `sample_records` (the memory visible to it; None = only synthetic records).  It is rendered twice - two
+    different results mean the harness is not reproducible - and once more on synthetic records, so a hook that
+    only copes with an empty or a particular memory is caught.  `rendered_sample` is the full text of the real
+    render; the caller persists it so that nobody has to re-execute a hook to obtain the notes again.
     """
     v: list[str] = []
     w: list[str] = []
@@ -431,8 +440,13 @@ def validate_files(files: dict[str, str], mode: str, parent_files: dict[str, str
     rendered = None
     try:
         h = Harness.from_files(files, "t", mode, "Hx", None)
-        records = _SAMPLE_RECORDS if sample_records is None else sample_records
-        rendered = h.render(h.select_records(records), round_=0)
+        real = list(sample_records) if sample_records is not None else None
+        probes = [(_SAMPLE_RECORDS, "synthetic memory")] + ([(real, "the real memory")] if real is not None else [])
+        for records, label in probes:
+            first = h.render(h.select_records(records), round_=round_)
+            if h.hooks and h.render(h.select_records(records), round_=round_) != first:
+                v.append(f"does not run reproducibly: two renders on {label} differ")
+            rendered = first                                      # the last probe is the real one when there is one
     except (PatchError, HookError) as exc:
         v.append(f"does not run: {exc}")
     return ScopeReport(not v, v, w, changed, rendered)
@@ -444,7 +458,8 @@ class HarnessStore:
 
     Each version directory holds `harness/` (the harness files), version.json (metadata) and, for t>0,
     diff.patch (file-level diff against the parent, a post-hoc record) plus patch.json (legacy patch improver) or
-    improver_record.json (direct-edit improver).  Versions written by the first pilot hold a single harness.json
+    improver_record.json (direct-edit improver), and rendered_notes.txt (the notes the version runs with, rendered once).
+    Versions written by the first pilot hold a single harness.json
     instead; `load` reads both.  Every version is committed to Git and tagged `harness/<task>/<mode>/<version>`.
     """
 
@@ -514,14 +529,24 @@ class HarnessStore:
         return new
 
     def commit_files(self, parent: Harness, files: dict[str, str], record: dict | None = None,
-                     patch: dict | None = None) -> Harness:
+                     patch: dict | None = None, rendered: str | None = None) -> Harness:
         """Persist the improver's edited file view as H_{t+1}.  The caller has already run `validate_files`.
-        `patch` is only given by the legacy patch improver, whose JSON patch is kept next to the files."""
+        `patch` is only given by the legacy patch improver, whose JSON patch is kept next to the files.
+        `rendered` is the notes text the version will run with (rendered once, before the commit): it is stored
+        and is what every later plan/collect/freeze/held-out step uses, so hooks are never re-executed to
+        reproduce it."""
         new = Harness.from_files(files, self.task, self.mode, self.next_version(), parent.version)
-        self._write(new, patch, self.diff_files(parent.to_files(), new.to_files(), parent.version, new.version), record)
+        self._write(new, patch, self.diff_files(parent.to_files(), new.to_files(), parent.version, new.version), record,
+                    rendered)
         return new
 
-    def _write(self, harness: Harness, patch: dict | None, diff: str, record: dict | None = None) -> Path:
+    def rendered(self, version: str) -> str | None:
+        """The persisted notes of a version, or None for versions written before notes were persisted (and H0)."""
+        path = self.version_dir(version) / "rendered_notes.txt"
+        return path.read_text() if path.is_file() else None
+
+    def _write(self, harness: Harness, patch: dict | None, diff: str, record: dict | None = None,
+               rendered: str | None = None) -> Path:
         vdir = self.version_dir(harness.version)
         vdir.mkdir(parents=True, exist_ok=False)
         for path, text in harness.to_files().items():
@@ -535,6 +560,9 @@ class HarnessStore:
             meta["patch_sha256"] = hashlib.sha256(json.dumps(patch, sort_keys=True).encode()).hexdigest()
         if harness.parent is not None:
             (vdir / "diff.patch").write_text(diff)
+        if rendered is not None:
+            (vdir / "rendered_notes.txt").write_text(rendered)
+            meta["rendered_notes_sha256"] = hashlib.sha256(rendered.encode()).hexdigest()
         if record is not None:
             (vdir / "improver_record.json").write_text(json.dumps(record, indent=2, ensure_ascii=False, default=str) + "\n")
         (vdir / "version.json").write_text(json.dumps(meta, indent=2) + "\n")
