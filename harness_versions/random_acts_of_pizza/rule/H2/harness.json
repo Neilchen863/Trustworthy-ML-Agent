@@ -1,0 +1,18 @@
+{
+  "decision_policy_text": "",
+  "memory_policy": {
+    "max_chars": 1500,
+    "max_records": 5
+  },
+  "mode": "rule",
+  "parent": "H1",
+  "prompt_notes": "Ensure that all preprocessing steps, such as scaling or transforming data, are performed within the training fold only. Avoid using any fields or data that will not be available at prediction time to prevent data leakage. Be cautious of validation scores that seem unusually high, as they may indicate a validation mirage due to improper data handling.\nEnsure that all data preprocessing, including filling missing values and scaling, is performed after splitting the data into training and validation sets. This prevents data leakage and ensures that the model does not gain information from the validation set during training. Always verify that preprocessing steps are applied consistently across different data splits.",
+  "rule_config": {
+    "debug_prob": 1.0,
+    "max_debug_depth": 20,
+    "max_stagnation": 15,
+    "num_drafts": 5
+  },
+  "task": "random_acts_of_pizza",
+  "version": "H2"
+}

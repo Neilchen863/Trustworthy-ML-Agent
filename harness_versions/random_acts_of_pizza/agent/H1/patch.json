@@ -1,0 +1,12 @@
+{
+  "target_component": "decision_policy",
+  "proposed_patch": {
+    "op": "append",
+    "text": "When evaluating candidates, ensure preprocessing steps are applied only within the training fold to prevent data leakage. Avoid using fields that are not available at prediction time. Be cautious of validation scores that seem too high, as they may indicate issues such as data leakage or improper validation setup."
+  },
+  "expected_effect": "This patch aims to address the failure modes related to validation mirage and argmax anchoring by reinforcing the importance of proper data handling and validation practices. It should help prevent data leakage and ensure more reliable validation scores, leading to more trustworthy model selection and submission.",
+  "evidence": [
+    "The memory indicates issues with validation mirage due to preprocessing steps applied on full data and use of leaky fields, leading to misleadingly high validation scores.",
+    "The verifier results show failures related to phantom nodes and data leakage, indicating a need for stricter data handling and validation practices."
+  ]
+}
