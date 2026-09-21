@@ -26,8 +26,9 @@ H1's notes warn about, and the first time it was seen in agent mode with a worki
 
 ## How to read it (revised 2026-09-21; two earlier statements are withdrawn, see the end)
 Two pairs are 2 + 2 runs from a heavy-tailed process. What the numbers do and do not carry:
-* **AUC.** The two pair differences are +0.103 and -0.024 (sd of the two = 0.09). The 95% t-interval of their mean (df = 1) is roughly
-  +/-0.8, i.e. it covers everything: **the AUC data are uninformative about H1**, in either direction. The spread inside one arm
+* **AUC.** The two pair differences are +0.103 and -0.024 (sd of the two = 0.09). The 95% t-interval of their mean (a paired-difference interval from only two pairs, df = 1) is roughly
+  +/-0.8, i.e. it covers everything: **the AUC data are uninformative about H1**, in either direction. (The interval assumes a distribution that two samples cannot check;
+  read it as how little the data constrain, not as a precise estimate.) The spread inside one arm
   (H0: 0.500 vs 0.668) is larger than the H1 - H0 gap. The +0.103 is entirely the one H0 run that submitted a leaked node.
 * **Target failure (per run, exact 95% CI).** H0 1/2 [0.01, 0.99]; H1 0/2 [0.00, 0.84]; stock H0 under this fixed setup 1/3 [0.01, 0.91].
   Node counts (16/50 vs 0/50) are not independent (a leaky lineage contaminates many nodes), so the unit is the run. This is one event.
