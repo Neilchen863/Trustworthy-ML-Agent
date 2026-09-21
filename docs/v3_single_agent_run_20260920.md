@@ -40,7 +40,7 @@ verified against a real model.
 What the output shows, uncomfortably:
 * The model flipped `memory_policy.render` from `none` to `lessons` (allowed by design; the scope report flagged it as a confound). The rendered
   notes then contain its own advice **twice** (once as notes/policy, once as auto-injected lessons), the same duplication that made pilot effects
-  unattributable. Whether an improver may switch memory rendering on is a policy decision that is still open.
+  unattributable. Whether an improver may switch memory rendering on was decided by the user on 2026-09-21: it may.
 * Its edits are text reminders (fit preprocessing inside the fold; do not abandon neural networks after an error), like the pilot's patches: a
   plausible response to the evidence, with no reason to expect a changed behaviour.
 * Bug found and fixed in the same session: files written without a trailing newline glued the next file header to their last line in

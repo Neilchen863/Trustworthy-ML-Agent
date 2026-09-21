@@ -4,7 +4,7 @@
   "role": "train",
   "mode": "agent",
   "round": 1,
-  "replicate": 1,
+  "replicate": 2,
   "harness_version": "H1",
   "task_performance": {
     "score": 0.6439,
@@ -142,5 +142,12 @@
     "problems": [],
     "prompt_variant": "rsi_1db7637e50"
   },
-  "collected_at": "2026-09-20T20:35:43+00:00"
+  "collected_at": "2026-09-20T20:35:43+00:00",
+  "metadata_correction": {
+    "field": "replicate",
+    "recorded": 1,
+    "corrected_to": 2,
+    "corrected_on": "2026-09-21",
+    "reason": "`rsi collect` had no --replicate option and defaulted to 1; the run was submitted as replicate 2 (runs_index.jsonl). Fixed in loop.collect_round."
+  }
 }

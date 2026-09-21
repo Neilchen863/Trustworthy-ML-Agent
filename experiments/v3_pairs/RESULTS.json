@@ -24,7 +24,7 @@
         "submission_sanity",
         "validation_mirage"
       ],
-      "note": "run_record.replicate is 1 for every run (collect was called without --replicate); pair is given here"
+      "note": "replicate label of pair-2 run records corrected 1 -> 2 on 2026-09-21 (see CORRECTIONS.md)"
     },
     {
       "pair": 1,
@@ -45,7 +45,7 @@
       "cost_usd": 1.6009,
       "delivery_ok": true,
       "reward_negative": [],
-      "note": "run_record.replicate is 1 for every run (collect was called without --replicate); pair is given here"
+      "note": "replicate label of pair-2 run records corrected 1 -> 2 on 2026-09-21 (see CORRECTIONS.md)"
     },
     {
       "pair": 2,
@@ -66,7 +66,7 @@
       "cost_usd": 1.5254,
       "delivery_ok": true,
       "reward_negative": [],
-      "note": "run_record.replicate is 1 for every run (collect was called without --replicate); pair is given here"
+      "note": "replicate label of pair-2 run records corrected 1 -> 2 on 2026-09-21 (see CORRECTIONS.md)"
     },
     {
       "pair": 2,
@@ -87,7 +87,7 @@
       "cost_usd": 1.4365,
       "delivery_ok": true,
       "reward_negative": [],
-      "note": "run_record.replicate is 1 for every run (collect was called without --replicate); pair is given here"
+      "note": "replicate label of pair-2 run records corrected 1 -> 2 on 2026-09-21 (see CORRECTIONS.md)"
     }
   ],
   "auc_diff_h1_minus_h0": {

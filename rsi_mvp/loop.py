@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,17 +155,31 @@ class RsiProject:
         return [json.loads(l) for l in self.index_path.read_text().splitlines() if l.strip()]
 
     # ----------------------------------------------------------------- collect
+    def _replicate_of(self, task_name: str, mode: str, run_dir: Path) -> int:
+        """The replicate this run was SUBMITTED as, from runs_index.jsonl (matched by the job id in the run
+        directory name).  A run that was never submitted through this project counts as replicate 1."""
+        m = re.search(r"_j(\d+)$", run_dir.name)
+        if m:
+            for row in reversed(self.index()):
+                if str(row.get("job_id")) == m.group(1) and row.get("task") == task_name and row.get("mode") == mode:
+                    return int(row.get("replicate", 1))
+        return 1
+
     def collect_round(self, task_name: str, mode: str, round_: int, run_dir: str | Path,
                       version: str | None = None, force: bool = False, replay: bool = False,
-                      replicate: int = 1) -> dict:
+                      replicate: int | None = None) -> dict:
         """`replay=True` is for offline demos over ARCHIVED runs that were not produced by
-        `version`: delivery cannot be confirmed, so it is recorded as a replay explicitly."""
+        `version`: delivery cannot be confirmed, so it is recorded as a replay explicitly.
+        `replicate=None` (default) is looked up from the submission record; it used to default to 1, which
+        mislabelled every replicate > 1 collected by hand (found in v3_pairs)."""
         task = self.task(task_name)
         assert_train(task.role, "collect a run into an RSI round")
         self._assert_not_frozen(task_name, mode, "collect into a training round")
         store = self.store(task_name, mode)
         version = version or store.latest()
         run_dir = Path(run_dir)
+        if replicate is None:
+            replicate = self._replicate_of(task_name, mode, run_dir)
         out_dir = self._round_dir(round_, task_name, mode) / run_dir.name
         if out_dir.exists() and not force:
             raise LoopError(f"{out_dir} already collected (use force to redo; memory would be duplicated)")

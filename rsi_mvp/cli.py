@@ -100,7 +100,8 @@ def cmd_status(args) -> None:
 
 def cmd_collect(args) -> None:
     p = _project(args)
-    rec = p.collect_round(args.task, args.mode, args.round, _run_dir(p, args, args.task), args.harness)
+    rec = p.collect_round(args.task, args.mode, args.round, _run_dir(p, args, args.task), args.harness,
+                          replicate=args.replicate)
     print(json.dumps({"run_id": rec["run_id"], "task_performance": rec["task_performance"],
                       "reward_vector": rec["reward_vector"], "delivery": rec["delivery"]}, indent=2))
 
@@ -210,6 +211,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--run-dir"); sp.add_argument("--job-id"); sp.add_argument("--harness", default=None)
         if name == "collect":
             sp.add_argument("--round", type=int, required=True)
+            sp.add_argument("--replicate", type=int, default=None,
+                            help="default: the replicate the run was submitted as (from runs_index.jsonl)")
         else:
             sp.add_argument("--harness-task", required=True); sp.add_argument("--replicate", type=int, default=1)
             sp.set_defaults(harness=None)

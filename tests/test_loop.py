@@ -240,3 +240,16 @@ def test_cli_init_defaults_to_no_memory_rendering(tasks_dir, state, capsys):
     from rsi_mvp import cli
     cli.main(["--tasks-dir", str(tasks_dir), "--state-root", str(state), "init", "--task", ROAP, "--mode", "rule"])
     assert "memory render: none" in capsys.readouterr().out
+
+
+def test_collect_takes_the_replicate_from_the_submission_record(project, runs):
+    """v3_pairs: `collect` defaulted to replicate 1, mislabelling replicate 2 runs collected by hand."""
+    project.init_harness(ROAP, "agent")
+    project.rounds_root.mkdir(parents=True, exist_ok=True)
+    project.index_path.write_text(json.dumps({"task": ROAP, "mode": "agent", "job_id": "777", "replicate": 2}) + "\n")
+    run = make_run(runs, name="20260920_x_gpt4o_j777", mode="agent", agent_log=AGENT_LOG, nodes=PHANTOM, final="b")
+    assert project.collect_round(ROAP, "agent", 0, run)["replicate"] == 2
+    other = make_run(runs, name="20260920_y_gpt4o_j778", mode="agent", agent_log=AGENT_LOG, nodes=PHANTOM, final="b")
+    assert project.collect_round(ROAP, "agent", 0, other)["replicate"] == 1            # not in the index: 1
+    third = make_run(runs, name="20260920_z_gpt4o_j777", mode="agent", agent_log=AGENT_LOG, nodes=PHANTOM, final="b")
+    assert project.collect_round(ROAP, "agent", 1, third, replicate=5)["replicate"] == 5   # explicit still wins
