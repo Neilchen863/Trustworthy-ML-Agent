@@ -34,9 +34,8 @@ the perfect score, or that the decision prompt carried no prediction profile. Te
 though the field first appears at node 1. `S7_val_beats_gold` and `S1_submitted_phantom` use official test information; that is allowed for the improver of a
 train task, and such a verifier could not be used as a live signal inside the run.
 
-## Candidate next changes (not done; each needs a decision)
-1. Notes-level guidance aimed at stage 2 ("a feature that raises KeyError on the test set is unavailable at prediction time: drop it, never default it") - inside the
-   current harness boundary; H1 already says "avoid fields not available at prediction time" but not this specific repair pattern.
-2. Surface the prediction profile at selection time (stage 5-6): the existing pipeline switch `AIDE_SUB_STATS=1`. That is an AIDE-level flag, not a harness file,
-   so whether it may be turned on by the harness is a boundary decision for you.
-3. Make the verifier evidence for the improver stage-aware (which node, which repair) and in English.
+## Candidate next changes (superseded 2026-09-21; see `observation_policy_20260921.md`)
+User decisions: `AIDE_SUB_STATS` is inside the harness boundary (implemented as `observation_policy.json`, verified per run); stage-aware evidence goes to the improver first
+(implemented); guidance about test-side errors must not say "delete every feature that raises a KeyError" - first establish whether the feature exists at prediction time,
+remove it and re-validate if it is train-only, never mask it with a test-side default (a KeyError can also be a name/preprocessing mismatch).
+Correction to an earlier point: the profile switch reaches the feedback reviewer, not the submit-choice prompt (measured), so it helps the decision only if the reviewer passes it on.

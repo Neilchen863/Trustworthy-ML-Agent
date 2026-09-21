@@ -216,3 +216,15 @@ def test_collect_stores_the_trace_and_the_improver_reads_it_with_the_instruction
     assert "INSTRUCTION OR OBSERVATION" in text and "column-name or preprocessing mismatch" in text
     assert "never hide the problem by filling a default on the test side" in text
     assert "observation_policy.json" in text and "never labels, scores or the grader" in text
+
+
+def test_the_trace_reports_where_the_profile_really_appeared(runs):
+    plain = leak_run(runs, "pe_off")
+    tr = build_stage_trace(plain, read_journal(plain), read_final_node_id(plain), [FIELD])
+    assert tr["profile_exposure"] == {"sub_stats_setting": "off", "prompts_containing_profile": 0}
+    shown = leak_run(runs, "pe_on", profile_in_prompt=True)
+    with (shown / "run_config.txt").open("a") as f:
+        f.write("sub_stats        = 1\n")
+    tr = build_stage_trace(shown, read_journal(shown), read_final_node_id(shown), [FIELD])
+    assert tr["profile_exposure"]["sub_stats_setting"] == "1" and tr["profile_exposure"]["prompts_containing_profile"] == 1
+    assert "logged LLM prompts containing it: 1" in render_stage_trace(tr)

@@ -109,7 +109,6 @@ def sub_stats_evidence(run_dir: Path) -> dict:
     journal = sum("[submission-stats]" in "".join(n["_term_out"] if isinstance(n.get("_term_out"), list) else [str(n.get("_term_out") or "")])
                   for n in read_journal(Path(run_dir)))
     return {"run_config": cfg.get("sub_stats", "off"), "config_on": cfg.get("sub_stats", "off").lower() in SUB_STATS_ON,
-            "patch_loaded_line": "submission-stats patch applied" in log,
             "nodes_profiled_log": len(re.findall(r"\[sub-stats\] profile appended", log)), "nodes_profiled_journal": journal}
 
 

@@ -80,6 +80,23 @@ def _last_submit_prompt(run_dir: Path) -> str | None:
     return text[starts[k - 1]:starts[k]]
 
 
+def profile_exposure(run_dir: Path) -> dict:
+    """Where AIDE's submission profile actually appeared: the launcher's setting and the number of logged LLM prompts that
+    contain it (measured on aide.verbose.log; the submit-choice prompt is checked separately in decision_visibility)."""
+    cfg = ""
+    cfg_path = run_dir / "run_config.txt"
+    if cfg_path.is_file():
+        m = re.search(r"^sub_stats\s*=\s*(\S+)", cfg_path.read_text(errors="ignore"), re.M)
+        cfg = m.group(1) if m else ""
+    log = run_dir / "logs" / "aide.verbose.log"
+    prompts = None
+    if log.is_file():
+        starts = [m.start() for m in _RECORD.finditer(log.read_text(errors="ignore"))]
+        text = log.read_text(errors="ignore")
+        prompts = sum("[submission-stats]" in text[a:b] for a, b in zip(starts, starts[1:] + [len(text)]))
+    return {"sub_stats_setting": cfg or "off", "prompts_containing_profile": prompts}
+
+
 def _norm(s: str) -> str:
     return " ".join(s.replace('\\"', '"').replace("\\n", " ").split())
 
@@ -194,7 +211,7 @@ def build_stage_trace(run_dir: str | Path, nodes: list[dict], final_node_id: str
         if not vis["mentions_keyerror"]:
             not_visible.append("the test-side KeyError that revealed the field was missing at prediction time")
     return {"fields": fields, "stages": stages, "decision_prompt": vis, "not_visible_to_decision_llm": not_visible,
-            "decision_reasoning_excerpt": reasoning,
+            "decision_reasoning_excerpt": reasoning, "profile_exposure": profile_exposure(run_dir),
             "note": "Steps are journal steps; visibility is measured on the logged prompt of the last choose_submission call."}
 
 
@@ -212,6 +229,9 @@ def render_stage_trace(trace: dict | None) -> str:
                        f" (praises a perfect/excellent result={v['chosen_feedback_praises_perfect']}).")
     else:
         lines.append("  What the submission-choosing LLM could read: unknown (no logged decision prompt).")
+    pe = trace.get("profile_exposure") or {}
+    lines.append(f"  Submission profile setting: {pe.get('sub_stats_setting')}; logged LLM prompts containing it: "
+                 f"{pe.get('prompts_containing_profile')} (the submit-choice prompt is reported above).")
     if trace["not_visible_to_decision_llm"]:
         lines.append("  Not visible to it: " + "; ".join(trace["not_visible_to_decision_llm"]) + ".")
     if trace.get("decision_reasoning_excerpt"):
