@@ -49,6 +49,7 @@ def build_input(harness: Harness, runs: list[dict], memory: list[dict]) -> dict:
                 {**v, "evidence": v["evidence"][:MAX_EVIDENCE_PER_VERIFIER]}
                 for v in r["verifier_results"] if is_actionable(v)],
             "delivery_ok": r["delivery"].get("ok", False),
+            **({"stage_trace": r["stage_trace"]} if r.get("stage_trace") else {}),
         } for r in runs],
         "aggregate_reward_vector": {k: sum(v) / len(v) for k, v in sorted(agg.items())},
         # node-level verifiers: the fraction of nodes flagged is an INTERVAL [lower, upper] (patterns can overlap

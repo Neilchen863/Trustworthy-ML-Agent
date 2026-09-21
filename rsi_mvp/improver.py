@@ -29,6 +29,7 @@ from .hooks import ALLOWED_IMPORTS, HOOKS, check_source
 from .llm import LLMError
 from .memory import LESSONS
 from .schemas import is_actionable
+from .stage_trace import render_stage_trace
 
 READ_CHUNK_CHARS = 10_000                  # read_file returns at most this much; offset pages through the rest
 MAX_TOOL_RESULT_CHARS = 24_000
@@ -83,6 +84,10 @@ THE HARNESS is exactly these files (files outside this list do not exist for you
   decision_policy.md     agent mode only: instructions for choosing what to try next and what to submit.
   rule_config.json       rule mode only: {rule_keys}
   memory_policy.json     {mem_keys}; "render": one of {list(MEMORY_RENDER_MODES)} (default rendering of memory lessons).
+  observation_policy.json  {{"submission_profile": true|false}}: what the agent gets to OBSERVE. true makes AIDE append a numeric
+                         profile of each candidate's own submission file (rows, per column n_unique/min/max/mean/std/NaN) to that
+                         node's output, so every LLM that reads node outputs sees it. It reads only the candidate's predictions:
+                         never labels, scores or the grader. Omit the file (or false) for stock behaviour.
   hooks/select_memory.py optional script: def select_memory(records, ctx) -> list[int]  (indices of the memory
                          records to use, best first). Replaces the default rule (worst reward first, one per lesson).
   hooks/render_notes.py  optional script: def render_notes(ctx) -> str  (the final notes text). Replaces the default
@@ -99,6 +104,15 @@ and that the harness actually renders, and shows a sample of the rendered notes.
 WHAT YOU MUST NOT DO: you cannot and must not change AIDE itself, the task data or the evaluator, and you must not
 point the agent at them. Guidance must be generic and actionable; never mention graders, hidden data, answer files
 or test labels. Do not put secrets or task-specific answers in the harness.
+
+INSTRUCTION OR OBSERVATION? Some failures persist because an instruction was too vague; others because the LLM that had to
+decide never saw the relevant fact. When a run has a stage trace (SUMMARY.md, runs.json), it lists, stage by stage, what
+happened and what the submission-choosing LLM could and could not read. A fact that was not visible cannot be fixed by
+better wording alone; one that was visible and ignored can.
+When you write guidance about errors at prediction time (for example a KeyError on the test data), do not turn it into
+"delete every feature that raises one": such an error can also come from a column-name or preprocessing mismatch. The
+guidance should be: first establish whether the feature is available at prediction time; if it is train-only, remove it and
+validate again; never hide the problem by filling a default on the test side.
 
 EVIDENCE: base changes on context/. Node-level rates are INTERVALS [lower, upper] (patterns overlap and the union is
 not recoverable): never assume the midpoint. One run per cell is noise-prone; prefer changes that address a failure
@@ -120,6 +134,9 @@ def evidence_summary(inp: dict) -> str:
             rate = f" rate [{v['rate']}, {v.get('rate_upper')}] ({v.get('n_flagged')}/{v.get('n_units')} nodes)" \
                 if v.get("rate") is not None else ""
             lines.append(f"    * {v['verifier']}: reward {v.get('reward')}{rate}: {str(v.get('explanation', ''))[:160]}")
+    traces = [render_stage_trace(r.get("stage_trace")) for r in inp["runs"] if r.get("stage_trace")]
+    if traces:
+        lines += [""] + traces
     lines += ["", "Aggregate reward vector (negative = detected failure mode):"]
     lines += [f"- {k}: {v:.3f}" for k, v in inp["aggregate_reward_vector"].items()]
     if inp["node_rate_intervals"]:

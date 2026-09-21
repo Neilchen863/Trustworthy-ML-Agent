@@ -17,6 +17,7 @@ How each harness component reaches AIDE (all verified against scripts/_common.sh
   rule_config   -> AIDE_MAX_STAGNATION, AIDE_DEBUG_PROB, AIDE_MAX_DEBUG_DEPTH,
                    AIDE_EXTRA_KWARGS="agent.search.num_drafts=N"
   mode          -> AIDE_SELECTION_MODE=rule|agent
+  observation   -> AIDE_SUB_STATS=1 (submission profile shown to the LLMs); verified per run in trajectory.delivery_check
 """
 from __future__ import annotations
 
@@ -73,6 +74,10 @@ def build_env(task: TaskPackage, mode: str, harness: Harness, variant: str | Non
         env["AIDE_DEBUG_PROB"] = str(rc["debug_prob"])
         env["AIDE_MAX_DEBUG_DEPTH"] = str(rc["max_debug_depth"])
         env["AIDE_EXTRA_KWARGS"] = f"agent.search.num_drafts={rc['num_drafts']}"
+    if harness.submission_profile:
+        # observation policy -> AIDE's existing submission-profile display.  NOT in the research repo's caller-override
+        # whitelist (we do not edit that repo): collect verifies at run time that the switch really took effect.
+        env["AIDE_SUB_STATS"] = "1"
     if variant:
         env["PROMPT_VARIANT"] = variant
     # AIDE_SEED_CODE / AIDE_SEED_PLAN are added by SgeBackend once the seed files are staged on the

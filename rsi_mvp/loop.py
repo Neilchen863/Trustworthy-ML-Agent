@@ -28,6 +28,7 @@ from .hooks import HookError
 from .improver import ImproveContext, PatchImprover, contract_text, prepare_workspace
 from .memory import MemoryStore
 from .runner import DryRunBackend, RunPlan, SgeBackend, make_plan
+from .stage_trace import build_stage_trace, suspect_fields
 from .schemas import make_event
 from .task import TaskPackage, load_tasks
 
@@ -189,7 +190,8 @@ class RsiProject:
         seed = task.pinned_first_draft()
         traj, bank = collect(run_dir, task, mode, round_, version, reveal_grade=True,
                              expected_variant=notes_variant(notes), notes_first_line=first_line,
-                             expected_seed_code=seed[0] if seed else None)
+                             expected_seed_code=seed[0] if seed else None,
+                             expected_sub_stats=store.load(version).submission_profile)
 
         mem = self.memory(task_name, mode)
         records = mem.records_from_run(traj, bank, round_)
@@ -209,6 +211,12 @@ class RsiProject:
             "unmapped_detectors": bank["unmapped_detectors"], "delivery": traj.delivery,
             "collected_at": _now(),
         }
+        try:                                    # how a train-only-field failure survived, for the improver (None if none)
+            trace = build_stage_trace(run_dir, traj.nodes, traj.final_node_id, suspect_fields(bank["results"]))
+            if trace is not None:
+                record["stage_trace"] = trace
+        except Exception as exc:                # never lose a collected run over the explanatory extra
+            record["stage_trace_error"] = f"{type(exc).__name__}: {exc}"
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "events.jsonl").write_text("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in events))
         _write_json(out_dir / "run_record.json", record)
@@ -369,7 +377,8 @@ class RsiProject:
         from .runner import notes_variant
         traj, bank = collect(run_dir, task, mode, -1, version, reveal_grade=True,
                              expected_variant=notes_variant(notes),
-                             notes_first_line=next((l for l in notes.splitlines() if l.strip()), None))
+                             notes_first_line=next((l for l in notes.splitlines() if l.strip()), None),
+                             expected_sub_stats=self.store(harness_task, mode).load(version).submission_profile)
         rec = {"run_id": run_dir.name, "task": test_task, "mode": mode, "harness_task": harness_task,
                "harness_version": version, "replicate": replicate,
                "score": traj.grade["score"] if traj.grade else None, "task_performance": traj.grade,

@@ -55,8 +55,13 @@ DEFAULT_MEMORY_POLICY = {"max_records": 5, "max_chars": 1500, "render": "none"}
 MEMORY_RENDER_MODES = ("none", "lessons")
 
 # The harness boundary, by responsibility.  Anything outside this set is outside the harness.
-ALLOWED_FILES = ("prompt_notes.md", "decision_policy.md", "rule_config.json", "memory_policy.json", "CHANGES.md",
-                 "hooks/select_memory.py", "hooks/render_notes.py")
+ALLOWED_FILES = ("prompt_notes.md", "decision_policy.md", "rule_config.json", "memory_policy.json",
+                 "observation_policy.json", "CHANGES.md", "hooks/select_memory.py", "hooks/render_notes.py")
+# What the agent gets to OBSERVE about its own candidates: switches of evidence displays that AIDE already implements
+# (context configuration, not AIDE code).  Each key maps to one existing AIDE switch and shows only information derived
+# from the candidate's own output: submission_profile -> AIDE_SUB_STATS=1 appends a numeric profile of the candidate's
+# submission.csv (rows, per-column n_unique/min/max/mean/std/NaN) to the node's output.  It never reads labels or scores.
+OBSERVATION_KEYS = {"submission_profile": bool}
 MAX_FILE_CHARS = 20_000
 MAX_NOTES_CHARS = 20_000            # what the runner may receive as notes after rendering
 
@@ -85,6 +90,7 @@ class Harness:
     memory_policy: dict | None = None
     hooks: dict = field(default_factory=dict)   # {"hooks/render_notes.py": source, ...}
     changes: str = ""                       # free-text CHANGES.md written by the improver
+    observation: dict = field(default_factory=dict)   # observation_policy.json; {} = stock AIDE (nothing extra shown)
 
     def __post_init__(self):
         if self.mode not in MODES:
@@ -92,6 +98,12 @@ class Harness:
         unknown = set(self.hooks) - set(HOOKS)
         if unknown:
             raise PatchError(f"unknown hook file(s) {sorted(unknown)}")
+        bad = {k: v for k, v in (self.observation or {}).items() if k not in OBSERVATION_KEYS
+               or not isinstance(v, OBSERVATION_KEYS[k])}
+        if bad:
+            raise PatchError(f"observation_policy.json: unknown key or non-boolean value {sorted(bad)} "
+                             f"(allowed: {sorted(OBSERVATION_KEYS)})")
+        self.observation = dict(self.observation or {})
         if self.memory_policy is None:
             self.memory_policy = dict(DEFAULT_MEMORY_POLICY)
         if self.memory_render not in MEMORY_RENDER_MODES:
@@ -101,6 +113,10 @@ class Harness:
             self.decision_policy_text = ""
         else:
             self.rule_config = None
+
+    @property
+    def submission_profile(self) -> bool:
+        return bool(self.observation.get("submission_profile", False))
 
     @property
     def memory_render(self) -> str:
@@ -118,13 +134,15 @@ class Harness:
             d["hooks"] = dict(self.hooks)
         if self.changes:
             d["changes"] = self.changes
+        if self.observation:
+            d["observation"] = dict(self.observation)
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Harness":
         return cls(**{k: d.get(k) for k in ("task", "mode", "version", "parent", "prompt_notes",
                                              "decision_policy_text", "rule_config", "memory_policy",
-                                             "hooks", "changes") if k in d})
+                                             "hooks", "changes", "observation") if k in d})
 
     # ---- the file view the improver edits
     def to_files(self) -> dict[str, str]:
@@ -134,6 +152,8 @@ class Harness:
             files["decision_policy.md"] = self.decision_policy_text
         else:
             files["rule_config.json"] = json.dumps(self.rule_config or {}, indent=2, sort_keys=True) + "\n"
+        if self.observation:
+            files["observation_policy.json"] = json.dumps(self.observation, indent=2, sort_keys=True) + "\n"
         if self.changes:
             files["CHANGES.md"] = self.changes
         files.update(self.hooks)
@@ -153,12 +173,14 @@ class Harness:
                 raise PatchError(f"{name} must contain a JSON object")
             return value
         memory_policy = load_json("memory_policy.json", None)
+        observation = load_json("observation_policy.json", {})
         rule_config = load_json("rule_config.json", {}) if mode == "rule" else None
         return cls(task=task, mode=mode, version=version, parent=parent,
                    prompt_notes=files.get("prompt_notes.md", ""),
                    decision_policy_text=files.get("decision_policy.md", "") if mode == "agent" else "",
                    rule_config=rule_config, memory_policy=memory_policy,
-                   hooks={k: v for k, v in files.items() if k in HOOKS}, changes=files.get("CHANGES.md", ""))
+                   hooks={k: v for k, v in files.items() if k in HOOKS}, changes=files.get("CHANGES.md", ""),
+                   observation=observation)
 
     def sha256(self) -> str:
         return hashlib.sha256(json.dumps(self.to_dict(), sort_keys=True).encode()).hexdigest()
@@ -422,6 +444,13 @@ def validate_files(files: dict[str, str], mode: str, parent_files: dict[str, str
                 v.append(f"`memory_policy.json`: {exc}")
             if "render" in mp and mp["render"] not in MEMORY_RENDER_MODES:
                 v.append(f"`memory_policy.json`: render must be one of {MEMORY_RENDER_MODES}")
+    if "observation_policy.json" in files:
+        op = parse("observation_policy.json")
+        if op is not None:
+            for k, val in op.items():
+                if k not in OBSERVATION_KEYS or not isinstance(val, OBSERVATION_KEYS[k]):
+                    v.append(f"`observation_policy.json`: unknown key or non-boolean value {k!r} "
+                             f"(allowed: {sorted(OBSERVATION_KEYS)})")
     for path, entry in HOOKS.items():
         if path in files:
             v.extend(f"`{path}`: {problem}" for problem in check_source(files[path], entry))
