@@ -3,6 +3,76 @@
 > 本文件是 Claude 文档《Real RSI 进度总结（截至 2026-09-22）》的 markdown 副本。文档为准；如两者不一致，说明文档之后又被编辑过。
 > 它衔接并大幅扩展了旧文档《Real RSI 进度总结（截至 2026-09-20）》（`real_rsi_progress_20260920.md`）——那份文档到 pilot/v2 阶段为止，本文档从 improver 重设计开始往下讲。
 
+## 方法与实现
+
+### 方法总览
+
+Real RSI 是包在现有 AIDE（rule/agent 两种模式）外面的一个最小自我改进循环，不重写 AIDE 本身：
+
+```
+任务包 → 现有 AIDE runner（rule|agent）+ 可变 harness H_t
+     → 轨迹 + 决策事件 → verifier bank（reward vector，从不合并成单一分数）
+     → 记忆更新 → improver 在独立 workspace 里直接编辑 harness 文件
+     → 范围/可运行性检查 → H_{t+1}（diff 只是事后记录）
+```
+
+**四条贯穿全局的设计原则**：
+1. **AIDE 本体、任务数据、evaluator 从不被改动**。harness 只能通过 AIDE 已经暴露的通道（环境变量 + notes 文件）送达，从不直接改研究 repo 代码。
+2. **reward 从不被折叠成单一分数**。verifier bank 返回原始向量，每个 verifier 独立发声，不互相抵消。
+3. **训练/测试纪律是硬约束，不是约定**（exposure ledger + 代码层硬检查），防止 held-out 的官方成绩泄露给 meta-improver。
+4. **每一步都可重放/可审计**：round 目录、harness 版本、memory jsonl 都是磁盘上的纯文件，任何步骤都能单独重跑。
+
+实现在独立小 repo `real-rsi-mvp/`（嵌在大 repo 里），不改大 repo 一行被跟踪的代码；研究仓库自己的 issue scanner 被未修改地向量化拷贝进来（`vendor/issue_scanner/audit_run.py`，测试守着 sha256）。
+
+### Harness：可变对象与边界
+
+**harness 是一个文件目录**（`harness.ALLOWED_FILES`，按职责划分不按后缀）：
+
+| 文件 | 职责 |
+|---|---|
+| `prompt_notes.md` | 追加到任务描述里的文本，代码生成（及 agent 模式决策）prompt 都会读 |
+| `decision_policy.md` | 仅 agent 模式：选什么/提交什么的指导文本 |
+| `rule_config.json` | 仅 rule 模式：白名单、有界的数值旋钮（max_stagnation 等） |
+| `memory_policy.json` | 记忆选取数量/长度上限，以及是否把 lessons 直接注入 prompt |
+| `observation_policy.json` | 能不能打开 AIDE 已有的观测开关（见下文） |
+| `CHANGES.md` | improver 自己的说明文本，不影响行为 |
+| `hooks/select_memory.py`、`hooks/render_notes.py` | 可选脚本，接管"怎么选记忆"、"怎么组织最终 notes"这两个职责，见下一节 |
+
+AIDE 本体、任务数据、evaluator 不在边界内，任何想指向它们的改动都会被拒。
+
+**版本存储**（`HarnessStore`，`harness_versions/<task>/<mode>/H<n>/`）：每个版本一个目录，含 `harness/`（文件本身）、`version.json`（元数据+sha256）、`diff.patch`（对父版本的文件级 unified diff，**只是事后记录**，从不是输入）、`rendered_notes.txt`（commit 时渲染一次并固化，之后永远不重新渲染）。每个版本都提交到 git 并打标签 `harness/<task>/<mode>/<version>`。
+
+**如何送达 AIDE（不改研究 repo）**：`runner.py` 只用研究 repo 自己暴露的环境变量通道（均在 `scripts/_common.sh` 的 `_CALLER_OVERRIDE_VARS` 白名单里，测试守着）：notes/decision policy/记忆 lessons → 内容寻址、不可变的 `config/tasks/<comp>.notes.rsi_<hash>.txt` + `PROMPT_VARIANT`（H0 渲染为空，是未被碰过的 stock 对照）；rule_config → `AIDE_MAX_STAGNATION`/`AIDE_DEBUG_PROB`/`AIDE_MAX_DEBUG_DEPTH`/`AIDE_EXTRA_KWARGS`；模式 → `AIDE_SELECTION_MODE=rule|agent`；观测策略 → `AIDE_SUB_STATS`（这个不在白名单里，改成 collect 时实时验证，见下文）。
+
+### Improve 流程：agent 直接编辑 harness
+
+（2026-09-20 重设计：从"improver 输出一个有边界的 JSON patch，程序应用"改成"improver 在独立副本里直接编辑文件，框架事后检查"。）
+
+1. `loop.improve` 为这一轮建一个独立 workspace：`harness/`（当前版本的可写副本）+ `context/`（只读证据：`SUMMARY.md` 人读概览、`runs.json` 完整 verifier 详情、`memory.json`、`history.json`（之前每次 improve 会话改了什么、对应版本得分如何）、`INSTRUCTIONS.md`（契约文本）。
+2. `AgentImprover`（任何具备 `chat_tools(messages, tools)` 的 LLM）拿到 `list_files`/`read_file`（分页）/`write_file`/`delete_file`/`check`/`finish` 六个工具，自由边寻边改。没有"一次一个组件"、"最大追加 N 字"的限制，可设 `max_steps`、`max_cost_usd`。
+3. 会话结束后，框架检查**范围**（只能改 `ALLOWED_FILES`、`context/` 未被碰、尺寸/数值边界/禁用文本）和**可运行性**（JSON 能解析、hook 过静态检查、在候选版本自己的 round 和它将看到的 memory 上真能渲染且渲染两次结果一致）。通过才成为 H_{t+1}，状态四选一：`proposed`/`no_change`/`rejected`/`error`。
+4. `diff.patch`、`improver_record.json`（摘要/对话记录/scope 报告/token 用量）、`rendered_notes.txt` 随新版本写入，都只是事后记录。
+
+旧的单个 JSON patch 路径保留为 `--improver patch`（`PatchImprover`，包装 `meta_improver.propose` + `apply_patch`，仍走同一套 workspace 检查）。`MockImprover` 做确定性直接编辑供离线测试。
+
+**hook 脚本沙箱**（`hooks/select_memory.py` 决定选哪些记忆，`hooks/render_notes.py` 决定最终 notes 怎么组织，两者都是可选的，不存在就用默认规则）：AST 静态策略只允许纯文本/数据处理库（json/re/math/textwrap/collections/itertools/statistics/string），禁模块内省/frame/`_` 开头属性/`hash`/`id`/类定义；子进程隔离（清空环境、空目录、超时、CPU/内存/文件描述符 rlimit）。**这是纵深防御，不是对抗恶意行为的安全边界**。
+
+### 证据管线：verifier、阶段化证据、观测策略
+
+**Verifier bank**（`rsi_mvp/verifiers/`）：包装研究 repo 现有的 issue scanner（未改动），按检测器 id/层级把每个 finding 路由到 6 个已实现的 verifier：`validation_argmax_anchoring`（提交了一个 phantom 节点）、`submission_sanity`（提交异常，如常数预测）、`validation_mirage`（预处理泄漏等——节点级区间奖励，报 [下界,上界]，因模式可能重叠无法求并集，**从不取中点**）、`extraction_distortion`、`simplified_error_attribution`、`fallback_to_runnable`。第 7 个 spec verifier `decision_insensitive_prompting` 需要成对 A/B prompt run，未实现，报 `not_applicable` 而不是静默丢弃。扫描器报了但没 verifier 认领的 finding 进 `unmapped_detectors`，让扫描器升级时新增的检测器可见。**reward vector 从不被折叠成单一分数**。
+
+**阶段化证据**（`rsi_mvp/stage_trace.py`，2026-09-21 新增）：只要泄漏字段检测器定位过某个字段，collect 时（仅 train 任务）就重建链条——字段首次使用 → 测试端报错 → 修复方式 → 验证结果 → 测试预测质量 → 最终选择——并在每一步在决策 LLM 的 prompt 日志上实测（不是假设）它实际能看到什么。进入 improver 的 `SUMMARY.md`/`runs.json`，让它能区分"指令不够具体"与"信息从未展示"。
+
+**观测策略**（`observation_policy.json`，2026-09-21 新增）：harness 可选打开 AIDE 已有的 `AIDE_SUB_STATS`，让候选自己提交文件的数值画像（n_unique/std/...）追加到该节点输出里，只读候选自己的预测，从不读标签/分数/grader。该开关不在研究 repo 的白名单里，所以 collect 时双向实时验证（开了必须真见到，没开不得出现）。实测发现：该画像只进反馈 reviewer 的 prompt，进不了 submit 决策 prompt，要让决策方真正看到得靠 reviewer 在 findings 里复述。
+
+### 记忆、训练/测试纪律、成本与安全
+
+**记忆**（`rsi_mvp/memory.py`）：每轮每个触发的 verifier 写一条 `{situation, decision_outcome, verifier, reward, evidence, lesson}` 记录，`lesson` 来自一个固定表（确定性的，可复现，不依赖 LLM 心情）；没有 verifier 触发也写一条 clean 记录。`memory_policy.render`（none|lessons）控制 lessons 是否直接注入 agent 的 prompt，默认 none——为了不让"记忆自动注入"和"补丁本身的效果"混在一起无法归因。improver 可以自己把 `render` 打开（2026-09-21 用户决定允许），代价是同一条建议会在 notes 里出现两遍。
+
+**训练/测试纪律**（`rsi_mvp/guards.py`）：`assert_train` 在任何"官方分数要进 improver 输入"的地方硬检查 `role=='train'`；每次暴露写入 append-only 的 exposure ledger；held-out 报告前重新检查 ledger，任何 test 任务/赛题出现过就拒绝。**Freeze**：固定某个 harness 版本+它当时会用到的 memory 快照（渲染结果也一并固化），之后训练不可再改。
+
+**成本与安全控制**：`tools/cost_watchdog.py` 按 token 日志实时统计 list-price 花费，达上限就 `qdel` job；`OpenAIChat`/`AgentImprover` 都能设 `max_cost_usd`，到线拒绝再发调用；每个 improve 会话都是独立 workspace，改坏了不会影响 H_t 本身（`rejected` 状态，不产生新版本）。完整 spec→代码对应表、CLI 用法、已知限制见 `README.md`；原始设计规格见 `docs/real_rsi_engineering_spec_v0.3.md`（**已部分过时**——写于此次重设计之前，还是 JSON patch 方案，没有 hook/观测策略/阶段化证据）。
+
 ## 一页结论
 
 工程部分已经做完并在 CRC 上真实跑通；截至 2026-09-22，**仍然没有一个能证明 RSI 方法本身有效的实验结论**，但比 09-20 那份总结进了一大步：agent 模式的决策 bug 已经修复并验证生效，improver 已经从「输出被程序应用的 JSON patch」重构成「在独立 workspace 里直接编辑 harness 文件」，并且第一次真实用这套新流程跑出了一个 H1、做了一次 H0 对 H1 的配对实验、对一次真实失败做了完整的机制分析。
