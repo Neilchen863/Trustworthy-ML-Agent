@@ -7,3 +7,18 @@ __pycache__/
 run.env
 # bulky CRC artifacts (overlay, staged files, job stdout); never committed
 artifacts/
+
+# Local runtime state and research archives
+.local/
+.venv/
+build/
+dist/
+.DS_Store
+/docs/
+/experiments/
+/harness_versions/
+/rounds/
+/heldout/
+/overlays/
+/tools/replay_reviewer.py
+/tools/trace_failure_lineage.py

@@ -1,1 +1,0 @@
-Neutral baseline: TF-IDF (word 1-2 grams) over the request title and text plus the standardized request-time numeric features, fed to a logistic regression. All preprocessing sits inside a Pipeline so it is fit on the training part of each fold only; only fields available at prediction time are used. Performance is reported as the mean ROC AUC over five stratified folds.
